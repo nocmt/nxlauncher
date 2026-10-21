@@ -154,7 +154,7 @@ index 0000000..216d318
 +    publish();
 +}
 diff --git a/dm/host/front_mac.m b/dm/host/front_mac.m
-index b2017ec..cd0437c 100644
+index b2017ec..f349170 100644
 --- a/dm/host/front_mac.m
 +++ b/dm/host/front_mac.m
 @@ -1,8 +1,11 @@
@@ -304,7 +304,7 @@ index b2017ec..cd0437c 100644
  typedef struct { void (*fn)(void); } guest_arg;
  static void *guest_tramp(void *p) {
      static char alt[65536];                       // The signal alternate stack is per thread; crash printing must also work on the guest thread
-@@ -55,51 +167,99 @@ static void on_key(NSEvent *e, int down) {
+@@ -55,51 +167,103 @@ static void on_key(NSEvent *e, int down) {
      ((guest_arg *)p)->fn(); LOG("guest thread finished"); exit(0);
  }
  
@@ -337,16 +337,20 @@ index b2017ec..cd0437c 100644
 -        v.wantsLayer = YES;
 +        win.minSize = NSMakeSize(640, 360);   // the picture is scaled to fit, so any size works
 +        win.acceptsMouseMovedEvents = YES;   // the mouse movement without a button (the camera) is only delivered when the window asks for it
++        // The title bar is transparent: the picture runs under it, so the window's top corners are
++        // the picture's top corners (rounded, like the system's) and the title bar's lower edge is
++        // a straight line across the picture, not a step.
++        win.titlebarAppearsTransparent = YES;
 +        DmGameView *v = [[DmGameView alloc] initWithFrame:r];
 +        win.contentView = v;   // the picture's view: the mouse handling lives in it
 +        v.wantsLayer = YES;   // the content view is the container; the Metal layer lives inside it
 +        // The window's corners are rounded, but the picture (a layer that draws straight into the
 +        // window's surface) is not clipped to the window's shape, so its square corners would cover
-+        // the rounded ones. The content is clipped to the same radius as the window -- the bottom
-+        // two corners, because the top ones belong to the title bar the system draws.
++        // the rounded ones. The content is clipped to the same radius as the window, with the
++        // system's continuous curve. All four corners: the content covers the whole window (the
++        // title bar floats on top of it), so the top ones are the window's top corners.
 +        v.layer.masksToBounds = YES;
 +        v.layer.cornerRadius = DM_WINDOW_CORNER;
-+        v.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
 +        v.layer.cornerCurve = kCACornerCurveContinuous;   // the system's curve, not a plain circle
 +        g_view = v;
          g_layer = [CAMetalLayer layer];
