@@ -154,7 +154,7 @@ index 0000000..216d318
 +    publish();
 +}
 diff --git a/dm/host/front_mac.m b/dm/host/front_mac.m
-index b2017ec..283f504 100644
+index b2017ec..36a23d4 100644
 --- a/dm/host/front_mac.m
 +++ b/dm/host/front_mac.m
 @@ -1,8 +1,11 @@
@@ -169,7 +169,7 @@ index b2017ec..283f504 100644
  #import <Metal/Metal.h>
  #include "dm.h"
  #include "dm_input.h"
-@@ -15,8 +18,20 @@
+@@ -15,8 +18,23 @@
  #include <signal.h>
  
  static CAMetalLayer *g_layer;
@@ -183,6 +183,9 @@ index b2017ec..283f504 100644
 +static uint64_t g_fps_frames;
 +static double g_fps_t;
 +static int g_fps_on;
++static int g_mouse_diag;                 // the mouse diagnostic (DM_MOUSE_DIAG=1)
++static long g_mouse_events;              // the mouse events the application received
++static NSWindow *g_win;                  // the game window (for the diagnostic)
 +
 +// The corner radius of the window. The picture is clipped to the same radius, so its square
 +// corners do not cover the rounded ones the system draws.
@@ -190,7 +193,7 @@ index b2017ec..283f504 100644
  
  void *front_metal_layer(void) { return (__bridge void *)g_layer; }
  // The original game's 16:9 constants, behavior unchanged; DM_GAME_RES=<width>x<height> (docked mode; handheld scaled by 720/900) is only for side-by-side comparison with iOS widescreen
-@@ -28,8 +43,64 @@ uint64_t front_game_res(int docked) {
+@@ -28,8 +46,64 @@ uint64_t front_game_res(int docked) {
  
  static void push(void) {
      int32_t lx = (g_d - g_a) * 32767, ly = (g_w - g_s) * 32767;
@@ -231,13 +234,13 @@ index b2017ec..283f504 100644
 +    if (sz.width <= 0 || sz.height <= 0) return;
 +    dm_touch t = {0, (float)(p.x / sz.width), (float)(1.0 - p.y / sz.height)};   // The AppKit view origin is at bottom left, the touchscreen origin is at top left
 +    dm_touch_set(&t, 1);
- }
++}
 +- (void)mouseDragged:(NSEvent *)e {
 +    NSPoint p = [self convertPoint:e.locationInWindow fromView:nil]; NSSize sz = self.bounds.size;
 +    if (sz.width <= 0 || sz.height <= 0) return;
 +    dm_touch t = {0, (float)(p.x / sz.width), (float)(1.0 - p.y / sz.height)};
 +    dm_touch_set(&t, 1);
-+}
+ }
 +- (void)mouseUp:(NSEvent *)e { dm_touch_set(NULL, 0); }
 +// The right button = the camera (the right stick): it deflects while the mouse moves and returns to
 +// the center a moment after the mouse stops.
@@ -256,7 +259,7 @@ index b2017ec..283f504 100644
  static int key_bit(unsigned short code) {
      switch (code) {
          case 38: return 0;  case 40: return 1;  case 32: return 2;  case 34: return 3;    // J K U I → A B X Y
-@@ -48,6 +119,47 @@ static void on_key(NSEvent *e, int down) {
+@@ -48,6 +122,56 @@ static void on_key(NSEvent *e, int down) {
      push();
  }
  
@@ -283,6 +286,15 @@ index b2017ec..283f504 100644
 +        if (g_look_y > -200 && g_look_y < 200) g_look_y = 0;
 +    }
 +    push();
++    if (g_mouse_diag) {   // once a second: is the application the active one, and where is the mouse?
++        static int tick_count; if (++tick_count % 30 == 0 && g_win) {
++            NSPoint m = [NSEvent mouseLocation];
++            NSRect f = [g_win frame];
++            LOG("[ui] the app is %s, the window is key=%d main=%d, the mouse is at %.0f,%.0f (the window's frame is %.0f,%.0f %.0fx%.0f), the mouse events so far: %ld",
++                NSApp.isActive ? "active" : "in the background", (int)g_win.isKeyWindow, (int)g_win.isMainWindow,
++                m.x, m.y, f.origin.x, f.origin.y, f.size.width, f.size.height, g_mouse_events);
++        }
++    }
 +    if (!g_fps_label) return;
 +    uint64_t f = dm_guest_frame();
 +    double now = CACurrentMediaTime(), dt = now - g_fps_t;
@@ -304,7 +316,7 @@ index b2017ec..283f504 100644
  typedef struct { void (*fn)(void); } guest_arg;
  static void *guest_tramp(void *p) {
      static char alt[65536];                       // The signal alternate stack is per thread; crash printing must also work on the guest thread
-@@ -55,51 +167,100 @@ static void on_key(NSEvent *e, int down) {
+@@ -55,51 +179,119 @@ static void on_key(NSEvent *e, int down) {
      ((guest_arg *)p)->fn(); LOG("guest thread finished"); exit(0);
  }
  
@@ -334,6 +346,7 @@ index b2017ec..283f504 100644
          win.title = @DM_GAME_NAME;   // the game profile's name (game name label)
 -        NSView *v = win.contentView;
 -        v.wantsLayer = YES;
++        g_win = win;
 +        win.minSize = NSMakeSize(640, 360);   // the picture is scaled to fit, so any size works
 +        win.acceptsMouseMovedEvents = YES;   // the mouse movement without a button (the camera) is only delivered when the window asks for it
 +        DmGameView *v = [[DmGameView alloc] initWithFrame:r];
@@ -397,6 +410,24 @@ index b2017ec..283f504 100644
 -            dm_touch t = {0, (float)(p.x / sz.width), (float)(1.0 - p.y / sz.height)};   // The AppKit view origin is at bottom left, the touchscreen origin is at top left
 -            dm_touch_set(&t, 1); return nil;
 -        }];
++        // Diagnostic (DM_MOUSE_DIAG=1): what the application really receives of the mouse, and
++        // whether it is the active app. The question it answers: does a click reach the game at
++        // all? (The traffic lights, the title bar and the resize edges are the window's own; the
++        // picture is the content view's. A local monitor sees the events before any view gets
++        // them, so it also shows the ones that are swallowed on the way.)
++        { const char *e = getenv("DM_MOUSE_DIAG");
++          if (e && *e && *e != '0') {
++            g_mouse_diag = 1;
++            [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskMouseMoved | NSEventMaskLeftMouseDragged handler:^NSEvent *(NSEvent *e) {
++                g_mouse_events++;
++                if (g_mouse_events <= 6 || g_mouse_events % 200 == 0)
++                    LOG("[ui] mouse: type %d at %.0f,%.0f in the window (the app is %s, the window is key=%d main=%d)",
++                        (int)e.type, e.locationInWindow.x, e.locationInWindow.y,
++                        NSApp.isActive ? "active" : "in the background", (int)win.isKeyWindow, (int)win.isMainWindow);
++                return e;   // only watching
++            }];
++            LOG("[ui] the mouse diagnostic is on");
++        } }
          [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowWillCloseNotification object:win queue:nil
                                                        usingBlock:^(NSNotification *n) { (void)n; exit(0); }];
 +        // Physical controllers (a Switch Pro Controller over Bluetooth, an Xbox pad, ...): the same input path the iOS app uses

@@ -103,6 +103,9 @@ struct ContentView: View {
 
     private var statusLine: String {
         if state.busy { return state.statusText }
+        // A message from the last action (it failed, or it wrote the settings): it stays on the
+        // screen, so nothing the user does ends in silence.
+        if !state.notice.isEmpty { return state.notice }
         guard let p = state.plan else { return "还没有选择游戏文件夹" }
         if !p.repoOK { return "找不到 nxnative 源码目录" }
         if p.built { return "已就绪 · \(p.version)" }
@@ -111,6 +114,7 @@ struct ContentView: View {
 
     private var statusColor: Color {
         if state.busy { return DS.warn }
+        if !state.notice.isEmpty { return state.noticeIsError ? DS.bad : DS.ok }
         guard let p = state.plan else { return DS.idle }
         if !p.repoOK { return DS.bad }
         return p.built ? DS.ok : DS.warn

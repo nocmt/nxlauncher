@@ -1,4 +1,5 @@
 // The launcher's state: the plan, the settings, and the run of the pipeline.
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -23,6 +24,13 @@ final class LauncherState: ObservableObject {
     @Published var progressNote: String = ""
     @Published var statusText: String = "就绪"
     @Published var logLines: [String] = []
+    /// What just happened, for the user: it stays on the screen until the next action, so a
+    /// failure is never silent (the progress text alone is only for the running operations).
+    @Published var notice: String = ""
+    @Published var noticeIsError: Bool = false
+    /// The .app that "开始游戏" starts; its name is also the name of the support folder
+    /// (env.txt, the saves), the way make-mac-app.sh builds it.
+    @Published var gameAppPath: String = UserDefaults.standard.string(forKey: "gameAppPath") ?? ""
 
     enum Language: String, CaseIterable, Identifiable {
         case system = "跟随系统"
@@ -47,6 +55,7 @@ final class LauncherState: ObservableObject {
         home = LauncherState.findHome()
         // The window can be opened on a game folder from the command line:
         //   NxLauncher --game-dir ~/Games/BotW --keys ~/keys/prod.keys
+        // --launch starts the game instead of showing the window (for a script or a test).
         let args = CommandLine.arguments
         var i = 1
         while i < args.count - 1 {
@@ -54,10 +63,14 @@ final class LauncherState: ObservableObject {
             case "--game-dir": gameDir = args[i + 1]; i += 2
             case "--keys": keysPath = args[i + 1]; i += 2
             case "--export-dir": exportDir = args[i + 1]; i += 2
+            case "--launch": launchOnly = true; i += 1
             default: i += 1
             }
         }
     }
+
+    /// Start the game from the command line, without the window.
+    var launchOnly = false
 
     static func findHome() -> URL {
         let fm = FileManager.default
@@ -112,6 +125,9 @@ final class LauncherState: ObservableObject {
         case .plan(let p):
             plan = p
             statusText = p.built ? "已就绪" : "尚未编译"
+            if gameAppPath.isEmpty || !FileManager.default.fileExists(atPath: gameAppPath) {
+                gameAppPath = findGameApp()?.path ?? ""
+            }
         case .games(let g):
             games = g
         case .stage(let name, let step):
@@ -132,8 +148,7 @@ final class LauncherState: ObservableObject {
         case .log(let line):
             appendLog(line)
         case .error(let msg):
-            appendLog("错误：" + msg)
-            statusText = msg
+            notify(msg, isError: true)
         }
     }
 
@@ -142,11 +157,19 @@ final class LauncherState: ObservableObject {
         if logLines.count > 500 { logLines.removeFirst(logLines.count - 500) }
     }
 
+    /// Say something to the user: it goes to the status line (it stays there until the next
+    /// action) and to the log.
+    func notify(_ message: String, isError: Bool = false) {
+        notice = message
+        noticeIsError = isError
+        appendLog(isError ? "✗ " + message : message)
+    }
+
     // --- the runs ---
 
     func startBuild() {
         guard !gameDir.isEmpty, !keysPath.isEmpty else {
-            statusText = "先选游戏文件夹和主机密钥"
+            notify("先选游戏文件夹和主机密钥", isError: true)
             return
         }
         // the values the background work needs are read here, on the main actor: the background
@@ -154,6 +177,7 @@ final class LauncherState: ObservableObject {
         let dir = gameDir, keys = keysPath, pipeline = self.pipeline
         busy = true
         statusText = "编译中"
+        notice = ""
         logLines.removeAll()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
@@ -161,14 +185,13 @@ final class LauncherState: ObservableObject {
                     Task { @MainActor in self?.handle(event) }
                 }
                 Task { @MainActor in
-                    self?.statusText = "编译完成"
+                    self?.notify("编译完成")
                     self?.busy = false
                     self?.refreshPlan()
                 }
             } catch {
                 Task { @MainActor in
-                    self?.appendLog("编译失败：\(error.localizedDescription)")
-                    self?.statusText = "编译失败"
+                    self?.notify("编译失败：\(error.localizedDescription)", isError: true)
                     self?.busy = false
                 }
             }
@@ -176,7 +199,7 @@ final class LauncherState: ObservableObject {
     }
 
     func exportMacApp() {
-        guard let plan, plan.built else { statusText = "还没有编译，先编译一次"; return }
+        guard let plan, plan.built else { notify("还没有编译，先编译一次", isError: true); return }
         let out = URL(fileURLWithPath: exportDir).appendingPathComponent("\(supportName).app").path
         let extra = ["--game", plan.baseTitleID, "--ver", plan.version,
                      "--work", plan.workDir, "--name", supportName,
@@ -201,13 +224,14 @@ final class LauncherState: ObservableObject {
                     Task { @MainActor in self?.handle(event) }
                 }
                 Task { @MainActor in
-                    self?.statusText = "导出完成：\(out)"
+                    // the exported .app is the one "开始游戏" starts from now on
+                    if target == "mac-app" { self?.setGameApp(URL(fileURLWithPath: out)) }
+                    self?.notify("导出完成：\(out)")
                     self?.busy = false
                 }
             } catch {
                 Task { @MainActor in
-                    self?.appendLog("导出失败：\(error.localizedDescription)")
-                    self?.statusText = "导出失败"
+                    self?.notify("导出失败：\(error.localizedDescription)", isError: true)
                     self?.busy = false
                 }
             }
@@ -215,15 +239,67 @@ final class LauncherState: ObservableObject {
     }
 
     /// Start the built Mac .app (it is a normal macOS app: NSWorkspace opens it).
+    ///
+    /// The .app is looked for in a few places, because the export directory is not the only one:
+    /// the .app is usually built next to the game files. Whatever is found, the settings are
+    /// written into that app's own support folder (the app's name is the folder's name), so the
+    /// game really reads them.
     func launchGame() {
-        guard let plan, plan.built else { statusText = "还没有编译，先编译一次"; return }
-        let app = URL(fileURLWithPath: exportDir).appendingPathComponent("\(supportName).app")
-        if !FileManager.default.fileExists(atPath: app.path) {
-            statusText = "先导出 .app（导出目录里没有）"
+        guard let plan, plan.built else { notify("还没有编译，先编译一次", isError: true); return }
+        guard let app = findGameApp() else {
+            notify("找不到已导出的 .app。导出目录：\(exportDir)；游戏文件夹：\(gameDir)。先点「导出 .app」，或把「导出目录」指到 .app 所在的文件夹。", isError: true)
             return
         }
+        setGameApp(app)
+        writeEnv()
         NSWorkspace.shared.open(app)
-        statusText = "已启动"
+        notify("已启动 \(app.lastPathComponent)")
+    }
+
+    /// The .app to start: the one that was used last, then the export directory, then the game
+    /// folder (the .app is usually built next to the game files).
+    func findGameApp() -> URL? {
+        let fm = FileManager.default
+        var found: [URL] = []
+        if !gameAppPath.isEmpty, fm.fileExists(atPath: gameAppPath) {
+            found.append(URL(fileURLWithPath: gameAppPath))
+        }
+        var dirs = [exportDir, gameDir]
+        if let work = plan?.workDir { dirs.append((work as NSString).deletingLastPathComponent) }
+        for dir in dirs where !dir.isEmpty {
+            let named = URL(fileURLWithPath: dir).appendingPathComponent("\(supportName).app")
+            if fm.fileExists(atPath: named.path) { found.append(named) }
+            let items = ((try? fm.contentsOfDirectory(atPath: dir)) ?? []).sorted()
+            for item in items where item.hasSuffix(".app") {
+                let u = URL(fileURLWithPath: dir).appendingPathComponent(item)
+                if !found.contains(u) { found.append(u) }
+            }
+        }
+        return found.first
+    }
+
+    /// Remember the .app: its name is the name of the support folder (env.txt, the saves).
+    private func setGameApp(_ app: URL) {
+        gameAppPath = app.path
+        UserDefaults.standard.set(app.path, forKey: "gameAppPath")
+    }
+
+    /// Start the game from the command line, without the window:
+    ///   NxLauncher --launch --game-dir ~/Games/BotW
+    /// It prints where everything went, so a script (or a test) can see it.
+    static func runLaunchFromCommandLine() {
+        let state = LauncherState()
+        state.refreshPlan()
+        guard let app = state.findGameApp() else {
+            print("no .app found (export dir: \(state.exportDir), game dir: \(state.gameDir))")
+            return
+        }
+        state.setGameApp(app)
+        state.writeEnv()
+        print("app: \(app.path)")
+        print("support: \(state.supportDir.path)")
+        print("env: \(state.supportDir.appendingPathComponent("env.txt").path)")
+        print("opened: \(NSWorkspace.shared.open(app))")
     }
 
     // --- the settings the game reads ---
@@ -232,7 +308,18 @@ final class LauncherState: ObservableObject {
     var supportDir: URL {
         URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent("Library/Application Support")
-            .appendingPathComponent(supportName)
+            .appendingPathComponent(appSupportName)
+    }
+
+    /// The name of the support folder: the name of the .app that is started (make-mac-app.sh
+    /// builds the app and its support folder with the same name). Before an app is known, the
+    /// game's own name.
+    var appSupportName: String {
+        if !gameAppPath.isEmpty {
+            let name = (gameAppPath as NSString).lastPathComponent
+            return name.hasSuffix(".app") ? String(name.dropLast(4)) : name
+        }
+        return supportName
     }
 
     var supportName: String {
@@ -277,6 +364,6 @@ final class LauncherState: ObservableObject {
         lines.append(contentsOf: kept)
         let text = lines.joined(separator: "\n") + "\n"
         try? text.write(to: file, atomically: true, encoding: .utf8)
-        statusText = "设置已写入 \(file.path)"
+        notify("设置已写入 \(appSupportName)/env.txt")
     }
 }
