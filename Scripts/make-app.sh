@@ -14,9 +14,17 @@ swift build -c release || { echo "FAIL: swift build"; exit 1; }
 BIN=$(swift build -c release --show-bin-path 2>/dev/null)/NxLauncher
 [ -x "$BIN" ] || { echo "FAIL: no binary at $BIN"; exit 1; }
 
+# the icon: it is kept in the repository, but a fresh clone without it draws it again
+ICON="$HERE/Resources/AppIcon.icns"
+if [ ! -f "$ICON" ]; then
+    echo "drawing the icon..."
+    bash "$HERE/Scripts/make-icon.sh" || { echo "FAIL: the icon"; exit 1; }
+fi
+
 rm -rf "$OUT"
 mkdir -p "$OUT/Contents/MacOS" "$OUT/Contents/Resources"
 cp "$BIN" "$OUT/Contents/MacOS/NxLauncher"
+cp "$ICON" "$OUT/Contents/Resources/AppIcon.icns"
 
 cat > "$OUT/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -27,6 +35,7 @@ cat > "$OUT/Contents/Info.plist" <<'PLIST'
     <key>CFBundleDisplayName</key>          <string>NxLauncher</string>
     <key>CFBundleIdentifier</key>           <string>local.nxlauncher.app</string>
     <key>CFBundleExecutable</key>           <string>NxLauncher</string>
+    <key>CFBundleIconFile</key>             <string>AppIcon</string>
     <key>CFBundlePackageType</key>          <string>APPL</string>
     <key>CFBundleShortVersionString</key>   <string>0.1.0</string>
     <key>CFBundleVersion</key>              <string>0.1.0</string>
