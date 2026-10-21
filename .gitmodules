@@ -1,0 +1,3 @@
+[submodule "nxnative"]
+	path = nxnative
+	url = https://github.com/seedds/nxnative.git

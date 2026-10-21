@@ -1,0 +1,22 @@
+# SwiftPM
+.build/
+dist/
+*.xcodeproj
+
+# the game data never belongs in the repository
+*.nsp
+*.xci
+*.sav
+prod.keys
+keys/
+
+# the upstream tree's build products (the submodule is a separate repository)
+nxnative/dm/host/dmhost
+nxnative/dm/host/gen/
+nxnative/dm/ios/Gen/
+nxnative/dm/ios/DmIOS.xcodeproj
+nxnative/dm/tools/nx_extract/obj/
+nxnative/dm/tools/nx_extract/bin/
+
+# macOS
+.DS_Store

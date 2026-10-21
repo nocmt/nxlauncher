@@ -1,0 +1,715 @@
+diff --git a/dm/host/Makefile b/dm/host/Makefile
+index 0e0ec7d..c23c89a 100644
+--- a/dm/host/Makefile
++++ b/dm/host/Makefile
+@@ -17,7 +17,7 @@ endif
+ GAME_H = gen/$(GAME)/game_profile.h
+ CFLAGS=-O1 -g -Wall -Wno-unused-function
+ # Service-layer takeover hle_*.c files are included by wildcard: adding a file does not touch this line (avoids merge conflicts)
+-SRC=main.c loader.c hle.c host_stubs.c crash.c probe.c thread.c memstat.m ../ios/Sources/dm_touch_controls.c $(sort $(wildcard hle_*.c)) front_mac.m entry.S dm_i18n.c
++SRC=main.c loader.c hle.c host_stubs.c crash.c probe.c thread.c memstat.m ../ios/Sources/dm_touch_controls.c $(sort $(wildcard hle_*.c)) front_mac.m front_gamepad_mac.m entry.S dm_i18n.c
+ # NVN null device + nn::vi + the Vulkan layer (dm/gfx/)
+ # Sources under dm/gfx, dm/gfx/nvn, dm/gfx/tex and dm/gfx/vk are included by wildcard (tests/ and metal/ do not go into the host): adding a file does not touch this line
+ GFX=$(sort $(wildcard ../gfx/*.c ../gfx/nvn/*.c ../gfx/nvn/*.m ../gfx/nvn/*.S ../gfx/tex/*.c ../gfx/tex/*.m ../gfx/vk/*.m))
+@@ -59,5 +59,5 @@ $(GAME_STAMP): FORCE
+ 	@mkdir -p gen; echo $(GAME) | cmp -s - $@ || echo $(GAME) > $@
+ .PHONY: FORCE
+ FORCE:
+-dmhost: $(SRC) $(GFX) dm.h hle.h dm_input.h front.h touch_mac.h ../ios/Sources/dm_touch_controls.[ch] $(GFX_H) $(GAME_H) $(GAME_DIR)/dmsh_chain.h $(GAME_STAMP) $(VPX_LIB)
+-	clang $(CFLAGS) -I../gfx/nvn/include -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(GAME_DIR) -I$(VPX) -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) -framework Cocoa -framework QuartzCore -framework Metal -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
++dmhost: $(SRC) $(GFX) dm.h hle.h dm_input.h dm_padmap.h front.h touch_mac.h ../ios/Sources/dm_touch_controls.[ch] $(GFX_H) $(GAME_H) $(GAME_DIR)/dmsh_chain.h $(GAME_STAMP) $(VPX_LIB)
++	clang $(CFLAGS) -I../gfx/nvn/include -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(GAME_DIR) -I$(VPX) -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) -framework Cocoa -framework QuartzCore -framework Metal -framework GameController -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
+diff --git a/dm/host/dm_i18n.c b/dm/host/dm_i18n.c
+index 3de957a..20a6cc9 100644
+--- a/dm/host/dm_i18n.c
++++ b/dm/host/dm_i18n.c
+@@ -15,7 +15,7 @@
+ 
+ _Atomic int g_dm_lang = -1;
+ 
+-#if TARGET_OS_IPHONE
++#if TARGET_OS_IPHONE || TARGET_OS_OSX
+ #include <CoreFoundation/CoreFoundation.h>
+ #endif
+ // Language tag (BCP 47, e.g. en-US, zh-Hans-CN, zh-Hant-TW, yue-Hant-HK) → the original game's language index. Only two outcomes: a language code that
+@@ -29,12 +29,12 @@ int dm_lang_from_tag(const char *t) {
+     for (unsigned k = 0; k < sizeof zh / sizeof *zh; k++) if (!strcmp(l, zh[k])) return 8;
+     return 0;
+ }
+-// Language on first install (no settings file yet): by the first entry of the iOS preferred languages (CFLocaleCopyPreferredLanguages, through dm_lang_from_tag: Chinese and Sinitic varieties → Simplified Chinese, everything else → English).
++// Language on first install (no settings file yet): by the first entry of the preferred languages (iOS: CFLocaleCopyPreferredLanguages; macOS: the same, so the Mac host follows the system language as well) (CFLocaleCopyPreferredLanguages, through dm_lang_from_tag: Chinese and Sinitic varieties → Simplified Chinese, everything else → English).
+ // It used to be always Simplified Chinese (back then the touch version had no way to change the language, and a Chinese player whose system was in English got the English version on a fresh install and could not change it back); the Custom page title row now has a language switch (dm_custom.c lang_en), so this is opened up.
+ // DM_LANG (host / test simulation, same as hle_oe.c) takes priority; a non-iOS host has no system language to ask and uses English, the default game language
+ int dm_sys_lang(void) {
+     const char *e = getenv("DM_LANG"); if (e && *e) return dm_lang_from_tag(e);
+-#if TARGET_OS_IPHONE
++#if TARGET_OS_IPHONE || TARGET_OS_OSX
+     int r = 0; CFArrayRef a = CFLocaleCopyPreferredLanguages();
+     if (a) { if (CFArrayGetCount(a) > 0) { char t[64]; if (CFStringGetCString((CFStringRef)CFArrayGetValueAtIndex(a, 0), t, sizeof t, kCFStringEncodingUTF8)) r = dm_lang_from_tag(t); } CFRelease(a); }
+     return r;
+diff --git a/dm/host/front_gamepad_mac.m b/dm/host/front_gamepad_mac.m
+new file mode 100644
+index 0000000..216d318
+--- /dev/null
++++ b/dm/host/front_gamepad_mac.m
+@@ -0,0 +1,100 @@
++// Physical controllers on the Mac (GameController framework): a Switch Pro Controller, Joy-Cons, an
++// Xbox pad, a PS pad, ... The state goes to the host through dm_pad_set, the same path the iOS app
++// uses, so it is ORed with the Mac keyboard (dm_input_set) and neither overrides the other; a stick
++// takes whichever of the two is deflected further.
++//
++// The four face buttons are mapped by the glyph on the button, not by its position: the system gives
++// them by position (A bottom, B right, X left, Y top), which on a Nintendo pad means B bottom / A
++// right / Y left / X top. dm_padmap.h tells the two layouts apart (a Nintendo pad is recognized by
++// its product category, e.g. "Switch Pro Controller"), so a Switch Pro Controller keeps the
++// Nintendo letters and an Xbox pad keeps its own. DM_PADMAP=nintendo|xbox forces the layout.
++//
++// A pad is best connected over Bluetooth: macOS exposes a USB Nintendo controller as a plain HID
++// gamepad, which the GameController framework does not always pick up.
++#import <Cocoa/Cocoa.h>
++#import <GameController/GameController.h>
++#include <pthread.h>
++#include "dm.h"
++#include "dm_input.h"
++#include "dm_padmap.h"
++
++static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
++static uint64_t g_btn;
++static int32_t g_lx, g_ly, g_rx, g_ry;
++
++static int32_t axis(float v) { return (int32_t)(fmaxf(-1.f, fminf(1.f, v)) * 32767); }
++
++static void publish(void) {
++    pthread_mutex_lock(&g_mu);
++    uint64_t b = g_btn;
++    int32_t lx = g_lx, ly = g_ly, rx = g_rx, ry = g_ry;
++    pthread_mutex_unlock(&g_mu);
++    dm_pad_set(b, lx, ly, rx, ry);
++}
++
++static void read_pad(GCExtendedGamepad *g, int kind) {
++    uint64_t m = 0;
++    // by the glyph: a Nintendo pad has A right / B bottom / X top / Y left, an Xbox pad A bottom / B right / X left / Y top
++    m |= dm_padmap_face(kind, g.buttonA.isPressed, g.buttonB.isPressed, g.buttonX.isPressed, g.buttonY.isPressed);
++    #define K(el, bit) if ((el).isPressed) m |= (bit)   // the DM_BTN_* values are masks, not bit indexes
++    K(g.leftShoulder, DM_BTN_L); K(g.rightShoulder, DM_BTN_R);
++    K(g.leftTrigger, DM_BTN_ZL); K(g.rightTrigger, DM_BTN_ZR);
++    K(g.buttonMenu, DM_BTN_PLUS); K(g.buttonOptions, DM_BTN_MINUS);
++    K(g.leftThumbstickButton, DM_BTN_LS); K(g.rightThumbstickButton, DM_BTN_RS);
++    K(g.dpad.left, DM_BTN_LEFT); K(g.dpad.up, DM_BTN_UP); K(g.dpad.right, DM_BTN_RIGHT); K(g.dpad.down, DM_BTN_DOWN);
++    #undef K
++    pthread_mutex_lock(&g_mu);
++    g_btn = m;
++    g_lx = axis(g.leftThumbstick.xAxis.value); g_ly = axis(g.leftThumbstick.yAxis.value);
++    g_rx = axis(g.rightThumbstick.xAxis.value); g_ry = axis(g.rightThumbstick.yAxis.value);
++    pthread_mutex_unlock(&g_mu);
++    publish();
++}
++
++static void pads_changed(void) {
++    int n = 0;
++    // DM_PADMAP=nintendo|xbox forces the layout when the automatic detection gets it wrong
++    static int forced = -1;
++    if (forced < 0) {
++        forced = 0;
++        const char *e = getenv("DM_PADMAP");
++        if (e) {
++            if (!strcasecmp(e, "nintendo")) forced = DM_PADKIND_NINTENDO;
++            else if (!strcasecmp(e, "xbox")) forced = DM_PADKIND_XBOX;
++        }
++    }
++    for (GCController *c in GCController.controllers) {
++        GCExtendedGamepad *g = c.extendedGamepad;
++        if (!g) continue;
++        n++;
++        int kind = forced ? forced : dm_padmap_kind(c.productCategory.UTF8String, c.vendorName.UTF8String);
++        g.valueChangedHandler = ^(GCExtendedGamepad *gg, GCControllerElement *el) { (void)el; read_pad(gg, kind); };
++        read_pad(g, kind);
++        LOG("[gamepad] controller: vendor '%s', category '%s' -> %s layout", c.vendorName.UTF8String ?: "?", c.productCategory.UTF8String ?: "?",
++            kind == DM_PADKIND_NINTENDO ? "Nintendo (A right / B bottom / X top / Y left)" : "Xbox (A bottom / B right / X left / Y top)");
++    }
++    if (!n) {   // no pad: let go of everything, so a button held while the pad was unplugged does not stick
++        pthread_mutex_lock(&g_mu);
++        g_btn = 0; g_lx = g_ly = g_rx = g_ry = 0;
++        pthread_mutex_unlock(&g_mu);
++        publish();
++    }
++    LOG("[gamepad] %d controller(s) on the Mac", n);
++}
++
++void dm_mac_gamepad_start(void) {
++    NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
++    [nc addObserverForName:GCControllerDidConnectNotification object:nil queue:[NSOperationQueue mainQueue]
++                  usingBlock:^(NSNotification *note) { (void)note; pads_changed(); }];
++    [nc addObserverForName:GCControllerDidDisconnectNotification object:nil queue:[NSOperationQueue mainQueue]
++                  usingBlock:^(NSNotification *note) { (void)note; pads_changed(); }];
++    pads_changed();
++}
++
++// Losing the focus: a button held while switching away gets no "release", so let go of everything
++void dm_mac_gamepad_reset(void) {
++    pthread_mutex_lock(&g_mu);
++    g_btn = 0; g_lx = g_ly = g_rx = g_ry = 0;
++    pthread_mutex_unlock(&g_mu);
++    publish();
++}
+diff --git a/dm/host/front_mac.m b/dm/host/front_mac.m
+index b2017ec..90ebab2 100644
+--- a/dm/host/front_mac.m
++++ b/dm/host/front_mac.m
+@@ -1,8 +1,11 @@
+ // Mac front end: with DM_WINDOW=1 open a window (CAMetalLayer, for the graphics backend to present frames) + keyboard → dm_input; the guest runs on a large-stack thread instead and the main thread belongs to AppKit.
+ // Without DM_WINDOW: the guest runs directly on the current thread, behaving the same as with no front end (windowless tests use this).
+ // Key map (Nintendo layout): WASD left stick, arrow keys D-pad, J=A K=B U=X I=Y, Q=L E=R, Z=ZL C=ZR, F=press left stick G=press right stick, Return=+ Tab=−.
++// Mouse: left button = a finger on the touchscreen (the on-screen gamepad overlay), right button drag = the right stick (the camera in BotW / 3D World), released a moment after the mouse stops.
++// DM_FPS=1 (or DM_FPS=1 always): the frame rate and the frame time in the window's top-right corner.
+ #import <Cocoa/Cocoa.h>
+ #import <QuartzCore/CAMetalLayer.h>
++#import <QuartzCore/CATransaction.h>   // the layer's frame is set without animation when the window is resized
+ #import <Metal/Metal.h>
+ #include "dm.h"
+ #include "dm_input.h"
+@@ -15,8 +18,16 @@
+ #include <signal.h>
+ 
+ static CAMetalLayer *g_layer;
++static NSView *g_view;
+ static uint64_t g_btn;
+ static int g_w, g_a, g_s, g_d;
++static int32_t g_look_x, g_look_y;      // the right stick from the mouse (the camera)
++static double g_look_until;              // the mouse stop moving: the stick returns to the center
++static NSPoint g_last_mouse;
++static NSTextField *g_fps_label;         // the frame rate in the top-right corner
++static uint64_t g_fps_frames;
++static double g_fps_t;
++static int g_fps_on;
+ 
+ void *front_metal_layer(void) { return (__bridge void *)g_layer; }
+ // The original game's 16:9 constants, behavior unchanged; DM_GAME_RES=<width>x<height> (docked mode; handheld scaled by 720/900) is only for side-by-side comparison with iOS widescreen
+@@ -28,7 +39,21 @@ uint64_t front_game_res(int docked) {
+ 
+ static void push(void) {
+     int32_t lx = (g_d - g_a) * 32767, ly = (g_w - g_s) * 32767;
+-    dm_input_set(g_btn, lx, ly, 0, 0);
++    dm_input_set(g_btn, lx, ly, g_look_x, g_look_y);
++}
++// The mouse movement becomes the right stick (the camera). The stick stays deflected while the mouse moves and returns to the center a moment after it stops.
++static int g_mouse_seen;
++static void look_delta(NSPoint p) {
++    if (!g_mouse_seen) { g_mouse_seen = 1; g_last_mouse = p; return; }   // the first movement only records the position
++    double dx = p.x - g_last_mouse.x, dy = p.y - g_last_mouse.y;
++    g_last_mouse = p;
++    if (dx == 0 && dy == 0) return;
++    g_look_x += (int32_t)(dx * 260); g_look_y += (int32_t)(dy * 260);   // the view's y grows upwards, and the stick's y is up as well
++    if (g_look_x > 32767) g_look_x = 32767; if (g_look_x < -32767) g_look_x = -32767;
++    if (g_look_y > 32767) g_look_y = 32767; if (g_look_y < -32767) g_look_y = -32767;
++    g_look_until = CACurrentMediaTime() + 0.12;
++    static int trace; if (++trace % 300 == 1) LOG("[ui] the mouse moves the camera: the right stick is %d,%d", g_look_x, g_look_y);
++    push();
+ }
+ static int key_bit(unsigned short code) {
+     switch (code) {
+@@ -48,6 +73,47 @@ static void on_key(NSEvent *e, int down) {
+     push();
+ }
+ 
++// The picture is presented into the layer's drawable, letterboxed to keep the game's aspect (present_encode_m4 scales it to fit), so the window can be any size; the layer follows the view.
++static void layout_layer(void) {
++    if (!g_layer || !g_view) return;
++    [CATransaction begin]; [CATransaction setDisableActions:YES];
++    g_layer.frame = g_view.bounds;
++    g_layer.contentsScale = g_view.window ? g_view.window.backingScaleFactor : 1.0;
++    [CATransaction commit];
++    if (g_fps_label && g_view) {   // the counter sits in the top-right corner, below the title bar (the window's title bar covers the first 32 points of the content view)
++        NSRect b = g_view.bounds;
++        g_fps_label.frame = NSMakeRect(MAX(0, b.size.width - 250), MAX(0, b.size.height - 66), 240, 26);
++    }
++}
++
++// The frame rate / frame time, and the mouse-look stick returning to the center
++static void tick(id timer) {
++    (void)timer;
++    if (CACurrentMediaTime() > g_look_until) {   // the mouse stopped: the stick returns to the center
++        g_look_x = (int32_t)(g_look_x * 0.75);
++        g_look_y = (int32_t)(g_look_y * 0.75);
++        if (g_look_x > -200 && g_look_x < 200) g_look_x = 0;
++        if (g_look_y > -200 && g_look_y < 200) g_look_y = 0;
++    }
++    push();
++    if (!g_fps_label) return;
++    uint64_t f = dm_guest_frame();
++    double now = CACurrentMediaTime(), dt = now - g_fps_t;
++    if (dt >= 0.2) {   // a readable number, not a flickering one: the frames and the time are counted from the last update
++        uint64_t df = f - g_fps_frames;
++        double fps = df / dt, ms = df ? dt * 1000.0 / df : 0;
++        g_fps_label.stringValue = [NSString stringWithFormat:@"%.1f fps   %.1f ms   frame %llu", fps, ms, (unsigned long long)f];
++        static int once; if (!once++) {
++            LOG("[ui] the frame rate counter shows: %s", g_fps_label.stringValue.UTF8String);
++            LOG("[ui] the counter's layer frame %g,%g %gx%g (the title bar covers the first 32 points)",
++                g_fps_label.layer.frame.origin.x, g_fps_label.layer.frame.origin.y,
++                g_fps_label.layer.frame.size.width, g_fps_label.layer.frame.size.height);
++        }
++        g_fps_t = now; g_fps_frames = f;
++    }
++}
++
++
+ typedef struct { void (*fn)(void); } guest_arg;
+ static void *guest_tramp(void *p) {
+     static char alt[65536];                       // The signal alternate stack is per thread; crash printing must also work on the guest thread
+@@ -55,26 +121,66 @@ static void on_key(NSEvent *e, int down) {
+     ((guest_arg *)p)->fn(); LOG("guest thread finished"); exit(0);
+ }
+ 
++void dm_mac_gamepad_start(void);   // front_gamepad_mac.m: physical controllers (GameController)
++void dm_mac_gamepad_reset(void);
++
++// The front end's timer (the frame rate counter, the mouse-look stick returning to the center)
++@interface DmFrontTimer : NSObject
+++ (void)start;
++@end
++@implementation DmFrontTimer
+++ (void)start { [NSTimer scheduledTimerWithTimeInterval:1.0 / 30.0 target:[DmFrontTimer new] selector:@selector(onTick:) userInfo:nil repeats:YES]; }
++- (void)onTick:(NSTimer *)t { tick(t); }
++@end
++
+ void front_run(void (*guest)(void)) {
+     if (!getenv("DM_WINDOW")) { guest(); return; }
+     @autoreleasepool {
+         [NSApplication sharedApplication];
+         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+         NSRect r = NSMakeRect(0, 0, 1280, 720);
++        // DM_WINDOW_SIZE=<width>x<height>: the size the window opens with (the picture is scaled to fit, so any size works)
++        { const char *e = getenv("DM_WINDOW_SIZE"); unsigned w, h; if (e && sscanf(e, "%ux%u", &w, &h) == 2 && w >= 640 && h >= 360) r = NSMakeRect(0, 0, w, h); }
+         NSWindow *win = [[NSWindow alloc] initWithContentRect:r
+-                                                    styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
++                                                    styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable | NSWindowStyleMaskFullScreen
+                                                       backing:NSBackingStoreBuffered defer:NO];
+         win.title = @DM_GAME_NAME;   // the game profile's name (game name label)
++        win.minSize = NSMakeSize(640, 360);   // the picture is scaled to fit, so any size works
++        win.acceptsMouseMovedEvents = YES;   // the mouse movement without a button (the camera) is only delivered when the window asks for it
+         NSView *v = win.contentView;
+-        v.wantsLayer = YES;
++        v.wantsLayer = YES;   // the content view is the container; the Metal layer lives inside it
++        g_view = v;
+         g_layer = [CAMetalLayer layer];
+         g_layer.device = MTLCreateSystemDefaultDevice();
+         g_layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+         g_layer.contentsScale = win.backingScaleFactor;
+-        v.layer = g_layer;
++        g_layer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
++        g_layer.frame = v.bounds;
++        // The Metal layer is a sublayer of the content view's layer, not the layer of the content view itself:
++        // a CAMetalLayer cannot hold sublayers, so with "v.layer = g_layer" the frame rate counter (a subview of the
++        // content view) would never be composited over the picture.
++        [v.layer addSublayer:g_layer];
+         [win center];
+         [win makeKeyAndOrderFront:nil];
+         [NSApp activateIgnoringOtherApps:YES];
++        // The picture is letterboxed into the drawable (present_encode_m4 scales it to fit), so the window may be resized or maximised freely; the layer follows the view
++        layout_layer();
++        // The frame rate / frame time in the top-right corner. On by default; DM_FPS=0 turns it off.
++        { const char *fe = getenv("DM_FPS"); g_fps_on = !(fe && !strcmp(fe, "0")); }
++        if (g_fps_on) {
++            g_fps_label = [NSTextField labelWithString:@""];
++            g_fps_label.wantsLayer = YES;   // without its own layer the counter is drawn into the view's backing and disappears behind the picture
++            g_fps_label.font = [NSFont monospacedDigitSystemFontOfSize:14 weight:NSFontWeightMedium];
++            g_fps_label.textColor = [NSColor colorWithSRGBRed:1 green:1 blue:1 alpha:0.9];
++            g_fps_label.backgroundColor = [NSColor colorWithSRGBRed:0 green:0 blue:0 alpha:0.45];
++            g_fps_label.alignment = NSTextAlignmentRight;
++            g_fps_label.bezeled = NO; g_fps_label.bordered = NO; g_fps_label.drawsBackground = YES;
++            [v addSubview:g_fps_label];   // plainly on top of the other subviews
++            layout_layer();
++            g_fps_t = CACurrentMediaTime();
++            LOG("[ui] the frame rate counter is on (the label %p, its layer %p, the view's layer %p, the picture's layer %p)",
++                g_fps_label, g_fps_label.layer, v.layer, g_layer);
++        }
+         [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown | NSEventMaskKeyUp handler:^NSEvent *(NSEvent *e) {
+             if (e.window != win) return e;   // Only swallow keys for the game window; other windows such as the software keyboard input box receive typing as usual
+             if (!e.isARepeat) on_key(e, e.type == NSEventTypeKeyDown);
+@@ -89,17 +195,40 @@ void front_run(void (*guest)(void)) {
+             dm_touch t = {0, (float)(p.x / sz.width), (float)(1.0 - p.y / sz.height)};   // The AppKit view origin is at bottom left, the touchscreen origin is at top left
+             dm_touch_set(&t, 1); return nil;
+         }];
++        // Right button drag = the right stick (the camera in BotW and 3D World): the stick deflects while the mouse moves and returns to the center a moment after it stops
++        [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskRightMouseDown | NSEventMaskRightMouseDragged | NSEventMaskRightMouseUp handler:^NSEvent *(NSEvent *e) {
++            if (e.window != win) return e;
++            NSPoint p = [v convertPoint:e.locationInWindow fromView:nil];
++            if (e.type == NSEventTypeRightMouseDown) { g_mouse_seen = 1; g_last_mouse = p; return nil; }
++            if (e.type == NSEventTypeRightMouseUp) { g_look_until = 0; g_look_x = g_look_y = 0; push(); return nil; }
++            look_delta(p);
++            return nil;
++        }];
++        // The mouse moves without a button: the same right stick, so the view is turned with the mouse directly (no button has to be held). A button that is down
++        // means the pointer is on the on-screen gamepad (a touch), so the movement is not read as the camera then.
++        [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskMouseMoved handler:^NSEvent *(NSEvent *e) {
++            if (e.window != win) return e;
++            if ([NSEvent pressedMouseButtons]) return e;
++            look_delta([v convertPoint:e.locationInWindow fromView:nil]);
++            return e;
++        }];
+         [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowWillCloseNotification object:win queue:nil
+                                                       usingBlock:^(NSNotification *n) { (void)n; exit(0); }];
++        // Physical controllers (a Switch Pro Controller over Bluetooth, an Xbox pad, ...): the same input path the iOS app uses
++        dm_mac_gamepad_start();
+         // Lifecycle (hle.h / dm.h): focus lost → 2, focus regained → 1; minimized → 3 + audio paused + GPU suspended, restored → resume (followed by focus regained → 1)
+         NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
+-        [nc addObserverForName:NSWindowDidResignKeyNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; if (!win.miniaturized) dm_focus_set(2); }];
++        [nc addObserverForName:NSWindowDidResignKeyNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; if (!win.miniaturized) dm_focus_set(2); dm_mac_gamepad_reset(); }];
+         [nc addObserverForName:NSWindowDidBecomeKeyNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; dm_focus_set(1); }];
+         [nc addObserverForName:NSWindowDidMiniaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; dm_focus_set(3); dm_audio_suspend(1); dm_gfx_suspend(1); }];
+-        [nc addObserverForName:NSWindowDidDeminiaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; dm_gfx_suspend(0); dm_audio_suspend(0); dm_focus_set(2); }];
++        [nc addObserverForName:NSWindowDidDeminiaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; dm_gfx_suspend(0); dm_audio_suspend(0); dm_focus_set(2); dm_mac_gamepad_reset(); }];
+         // Guest thread: 64 MiB stack (the Switch main thread stack is specified by npdm; the host gives plenty)
+         static guest_arg ga; ga.fn = guest;
+         pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 64u << 20);
++        // The window was resized (or maximised, or went full screen): the layer follows the view
++        [nc addObserverForName:NSWindowDidResizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; layout_layer(); }];
++        // The timer: the frame rate counter and the mouse-look stick returning to the center
++        [DmFrontTimer start];
+         pthread_t th; if (pthread_create(&th, &a, guest_tramp, &ga)) die("pthread_create guest");
+         [NSApp run];
+     }
+diff --git a/dm/host/hle_oe.c b/dm/host/hle_oe.c
+index f14c9d3..914b1bd 100644
+--- a/dm/host/hle_oe.c
++++ b/dm/host/hle_oe.c
+@@ -297,10 +297,16 @@ HLE_FORCE("_ZN2nn2oe42SetOperationModeChangedNotificationEnabledEb", "operation
+ HLE_FORCE("_ZN2nn2oe44SetPerformanceModeChangedNotificationEnabledEb", "performance mode change notification switch", void, h_oe_SetPerfModeNtf, unsigned on) { g_ntf_perfmode = on & 0xff; }
+ 
+ // nn::settings::LanguageCode = struct { char string[8]; }, 8 bytes returned by value in x0
+-HLE_FORCE("_ZN2nn2oe18GetDesiredLanguageEv", "system language query; value from DM_LANG", uint64_t, h_oe_GetLang, void) {
++// The system's language: DM_LANG wins (the host / test simulation); otherwise the host's own system language
++// (the Mac host reads the Mac's preferred languages the same way the iOS one reads the iOS languages,
++// dm_sys_lang() in dm_i18n.c): Chinese → "zh-Hans" (the code a Chinese Switch reports), everything else → "en-US".
++// The game asks the system for the language at the first start and keeps the answer in its own settings,
++// so this is what decides whether the game comes up in Chinese or in English.
++HLE_FORCE("_ZN2nn2oe18GetDesiredLanguageEv", "system language query; DM_LANG, otherwise the system language (Chinese → zh-Hans)", uint64_t, h_oe_GetLang, void) {
+     const char *e = getenv("DM_LANG");
+     char code[8] = {0};
+-    strncpy(code, e && *e ? e : "en-US", sizeof code - 1);
++    if (e && *e) strncpy(code, e, sizeof code - 1);
++    else { int dm_sys_lang(void); strncpy(code, dm_sys_lang() == 8 ? "zh-Hans" : "en-US", sizeof code - 1); }
+     uint64_t v; memcpy(&v, code, 8);
+     return v;
+ }
+diff --git a/dm/host/hle_svc.c b/dm/host/hle_svc.c
+index ba68ab3..bedca7a 100644
+--- a/dm/host/hle_svc.c
++++ b/dm/host/hle_svc.c
+@@ -3,6 +3,7 @@
+ #include "dm.h"
+ #include <sys/mman.h>
+ #include <errno.h>
++#include <stdlib.h>
+ #include <unistd.h>
+ #include <unistd.h>
+ #include <sched.h>
+@@ -16,19 +17,39 @@
+ // (read on a real device: 6 GB succeeds, 7 GB fails), so it cannot be made any wider --
+ // with an 8 GB reservation, builds from developer accounts that cannot sign that entitlement (free accounts) would exit at this step.
+ #define RESERVE DM_GAME_MEM_RESERVE   // SMBW: the heap needs only 1.47 GB, so the block stays at 5 GB like D2R (the total proven on a real device; a single 6 GB block can be reserved, but Metal etc. still need address space)
++// Application memory pool = the 3285 MB the Switch (4 GB model) gives applications. At startup (main+0x1b66160) the game sets the whole total reported by QueryMemoryInfo as the heap, retrying with 2 MB less on failure,
++// and hands the whole block to its own StandardAllocator (main+0x32137a0) -- so heap size = pool − image footprint, it has only as much as the host reports.
++// Previously 3 GB was reported here and SetHeapSize never failed: the heap was about 150 MB smaller than on the real device, at the run entry peak the main heap had only about 18 MB left, and under high local load a timing shift made a 128 KB request return null,
++// which the guest writes to without a null check (CRASH main+0x1b36138, re-verified after merge with inv_tap).
++#define APP_POOL DM_GAME_APP_POOL   // game profile app_pool (Mario 0xCD500000)
+ static uint8_t *g_as;              // ASLR region base = the whole block
+ static uint8_t *g_heap; static size_t g_heap_cur, g_heap_cap;
++// The size of the guest address space and the amount of memory the game is told about can be raised from the environment
++// (DM_MEM_RESERVE = the size of the reserved block, DM_MEM_POOL = the total the game may use, DM_MEM_ALIAS = the alias region;
++// both in bytes, 0x for hex).
++// The Mac host needs this: the game with the add-on content loaded needs more heap than the Switch's application pool gives it --
++// it then runs out of heap while the add-on content is being read, and the guest writes to the null pointer the allocator returned (main+0x155a7a4).
++// The iOS app keeps the values from the game profile (the phone has less RAM and one 6 GB reservation is the limit without the extended entitlement).
++static size_t env_size(const char *var, size_t dflt) {
++    const char *e = getenv(var);
++    if (e && *e) { char *end = NULL; unsigned long long v = strtoull(e, &end, 0); if (end && end != e && v > 0) return (size_t)v; }
++    return dflt;
++}
++static size_t g_reserve = RESERVE;   // the size of the reserved block (see env_size)
++static size_t app_pool_bytes(void) { return env_size("DM_MEM_POOL", (size_t)APP_POOL); }
++
+ // The address range lies entirely within the currently opened (readable and writable) part of the guest heap: such reads need no kernel trap to check, memcpy directly (used where guest memory is read every tick, such as diag.c tk_rd)
+ int dm_guest_heap_readable(uint64_t a, size_t n) { uint64_t b = (uint64_t)(uintptr_t)g_heap; size_t cur = g_heap_cur; return g_heap && a >= b && n <= cur && a - b <= cur - n; }
+ static uint8_t *g_alias; static size_t g_alias_cap;
+ static _Atomic uint64_t *g_alias_bits;   // alias region page bitmap (alias_pages)
+ static uint8_t *g_stack; static size_t g_stack_cap;
+ // The address lies in the guest address block (every guest thread stack is here: the game's own heap or the stack region); the big-stack entry (hle_bigstack.c) uses it to decide whether to switch stacks
+-int dm_guest_as_contains(uintptr_t a) { uintptr_t b = (uintptr_t)g_as; return g_as && a >= b && a - b < RESERVE; }
++int dm_guest_as_contains(uintptr_t a) { uintptr_t b = (uintptr_t)g_as; return g_as && a >= b && a - b < g_reserve; }
+ 
+ static void mem_init(void) {
+     if (g_as) return;
+-    g_as = mmap(NULL, RESERVE, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
++    g_reserve = env_size("DM_MEM_RESERVE", (size_t)RESERVE);
++    g_as = mmap(NULL, g_reserve, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+     if (g_as == MAP_FAILED) die("reserve guest AS");
+     // Fixed partition (all inside the reserved block): alias 2.875 GB, stack 256 MB, heap the remaining 1.625 GB.
+     // In newer SDKs the AddressRegionManager always takes 0x3fe00000 (~1 GB) at the start of the alias region as its node area (sdk 0x134728) before handing out regions; with a 512 MB alias region the very first AllocateAddressRegion fails (0x1803).
+@@ -36,18 +57,18 @@ static void mem_init(void) {
+     //   and resource loading then MapPhysicalMemory's into the alias region after the node area on demand. With a 1.25 GB alias region only about 256 MB was left there, and 3 MB-class layout archives (WipeCourseIn / WipeWarp)
+     //   got no address, were skipped, and crashed on a null pointer when used (main +0x373e04). So alias = node area + 1.75 GB + slack; the heap needs only 1.47 GB, and 2.625 GB is plenty.
+     // The alias and stack sizes come from the game profile (mem_alias / mem_stack), the heap takes the rest; Mario: alias 0xB8000000, stack 0x10000000 → stack at +0xC8000000, heap at +0xD8000000
+-    g_alias = g_as + 0x10000000; g_alias_cap = DM_GAME_MEM_ALIAS;
++    g_alias = g_as + 0x10000000; g_alias_cap = env_size("DM_MEM_ALIAS", (size_t)DM_GAME_MEM_ALIAS);
+     g_stack = g_alias + g_alias_cap; g_stack_cap = DM_GAME_MEM_STACK;
+-    g_heap  = g_stack + g_stack_cap; g_heap_cap  = RESERVE - (size_t)(g_heap - g_as);
++    g_heap  = g_stack + g_stack_cap; g_heap_cap  = g_reserve - (size_t)(g_heap - g_as);
+     if (!(g_alias_bits = calloc((g_alias_cap >> 18) + 1, sizeof *g_alias_bits))) die("alias region page bitmap calloc");
+-    LOG("guest AS %p +%#llx  heap %p alias %p stack %p", g_as, (unsigned long long)RESERVE, g_heap, g_alias, g_stack);
++    LOG("guest AS %p +%#llx  heap %p alias %p stack %p", g_as, (unsigned long long)g_reserve, g_heap, g_alias, g_stack);
+ }
+ 
+ // Application memory pool = the 3285 MB the Switch (4 GB model) gives applications. At startup (main+0x1b66160) the game sets the whole total reported by QueryMemoryInfo as the heap, retrying with 2 MB less on failure,
+ // and hands the whole block to its own StandardAllocator (main+0x32137a0) -- so heap size = pool − image footprint, it has only as much as the host reports.
+ // Previously 3 GB was reported here and SetHeapSize never failed: the heap was about 150 MB smaller than on the real device, at the run entry peak the main heap had only about 18 MB left, and under high local load a timing shift made a 128 KB request return null,
+ // which the guest writes to without a null check (CRASH main+0x1b36138, re-verified after merge with inv_tap).
+-#define APP_POOL DM_GAME_APP_POOL   // game profile app_pool (Mario 0xCD500000)
++// (the APP_POOL define is at the top of the file, next to RESERVE)
+ static size_t image_bytes(void) { size_t n = 0; for (int i = 0; i < g_nmod; i++) n += g_mod[i].size; return (n + 0x1fffff) & ~(size_t)0x1fffff; }
+ // Giant bss (modules with the patch area before the base, patch_nso.py FAR): the image bytes beyond the file part. Used memory was reported as "heap + 64 MB", where the 64 MB covers ordinary modules' code and data (Mario's two modules are about 74 MB together,
+ // and the heap it opens = pool − 64 MB − 1.75 GB virtual address memory − 1 MB = 0x5be00000, as on hardware); Metroid Dread's main has about 1.8 GB of bss, the engine's static heap, which the Switch counts as used;
+@@ -55,7 +76,7 @@ static size_t image_bytes(void) { size_t n = 0; for (int i = 0; i < g_nmod; i++)
+ static size_t big_bss_bytes(void) { size_t n = 0; for (int i = 0; i < g_nmod; i++) if (g_mod[i].patch_off < 0) n += g_mod[i].size - g_mod[i].file_image_len; return n; }
+ 
+ // For memory accounting (memstat.m): the range of the whole guest address space block (base = NULL when not initialized)
+-void svc_guest_range(uint8_t **base, size_t *size) { *base = g_as; *size = RESERVE; }
++void svc_guest_range(uint8_t **base, size_t *size) { *base = g_as; *size = g_reserve; }
+ 
+ enum { I_CoreMask=0, I_PriorityMask=1, I_AliasAddr=2, I_AliasSize=3, I_HeapAddr=4, I_HeapSize=5,
+        I_TotalMem=6, I_UsedMem=7, I_DebuggerAttached=8, I_ResourceLimit=9, I_IdleTick=10, I_RandomEntropy=11,
+@@ -104,16 +125,24 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
+     case 0x01: {  // SetHeapSize(out_addr*, size)  → x1 = heap base
+         size_t size = regs[1];
+         if (size > g_heap_cap) { LOG("SetHeapSize OOM: req %#zx > cap %#zx", size, g_heap_cap); regs[0] = 0xD401; return 0; }
+-        if (size + image_bytes() > APP_POOL) {   // exceeds the application memory pool: ResultLimitReached. At startup the game retries in 2 MB decrements until it fits (main+0x1b66184)
++        if (size + image_bytes() > app_pool_bytes()) {   // exceeds the application memory pool: ResultLimitReached. At startup the game retries in 2 MB decrements until it fits (main+0x1b66184)
+             // Logged once (Mario's retries would repeat it): a game that sizes its heap as pool − used memory and does not retry stops here when its modules are larger than the used memory reported
+             // (profile mem_used; the NSP script's probe boot reads this line, and sets mem_used when no SetHeapSize succeeds afterwards)
+             static int once; if (!once++) LOG("[mem] SetHeapSize %#zx + modules %#zx > app pool %#llx (used memory reported %#llx + bss %#zx)", size, image_bytes() - big_bss_bytes(),
+-                                              (unsigned long long)APP_POOL, (unsigned long long)DM_GAME_MEM_USED, big_bss_bytes());
++                                              (unsigned long long)app_pool_bytes(), (unsigned long long)DM_GAME_MEM_USED, big_bss_bytes());
+             regs[0] = 0x10801; return 0;
+         }
+         int rc = 0;
+         if (size > g_heap_cur) rc = mprotect(g_heap + g_heap_cur, size - g_heap_cur, PROT_READ | PROT_WRITE);
+         else if (size < g_heap_cur) rc = mprotect(g_heap + size, g_heap_cur - size, PROT_NONE);
++        // The whole memory picture in one line: how much heap the game asks for, how much of it the host can give
++        // (the region size), how big the module images are (they are subtracted from the pool) and what the game was told
++        // about the total and the used memory (the game sizes its heap as total − used).
++        LOG("[mem] SetHeapSize req %#zx (%.2f GB) | image %#zx (%.2f GB) | pool %#llx (%.2f GB) | heap region %#zx (%.2f GB) | total %#llx used %#llx",
++            size, size / 1073741824.0, image_bytes(), image_bytes() / 1073741824.0,
++            (unsigned long long)app_pool_bytes(), app_pool_bytes() / 1073741824.0,
++            g_heap_cap, g_heap_cap / 1073741824.0,
++            (unsigned long long)app_pool_bytes(), (unsigned long long)(g_heap_cur + DM_GAME_MEM_USED + big_bss_bytes()));
+         if (g_flag.svc) LOG("SetHeapSize %#zx -> base %p mprotect=%d errno=%d", size, g_heap, rc, errno);
+         else if (size > g_heap_cur) LOG("[mem] heap %.2f GB (heap region %.2f GB)", size / 1073741824.0, g_heap_cap / 1073741824.0);
+         g_heap_cur = size;
+@@ -155,8 +184,8 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
+         pthread_mutex_lock(&g_map_lock);   // the registry branches read g_map; the other branches are cheap, so the lock simply spans the whole chain
+         if (a >= g_heap && a < g_heap + g_heap_cur) { base=(uint64_t)g_heap; size=g_heap_cur; state=5/*Heap*/; perm=3; }
+         else if ((k = map_find(addr, 1))) { base=g_map[k-1].base; size=g_map[k-1].size; state=g_map[k-1].state; perm=3; }
+-        else if (a >= g_as && a < g_as + RESERVE) {   // free: up to the adjacent mapping/heap boundary
+-            uint64_t lo = (uint64_t)g_as, hi = (uint64_t)g_as + RESERVE;
++        else if (a >= g_as && a < g_as + g_reserve) {   // free: up to the adjacent mapping/heap boundary
++            uint64_t lo = (uint64_t)g_as, hi = (uint64_t)g_as + g_reserve;
+             if (a >= g_heap) lo = (uint64_t)g_heap + g_heap_cur;
+             else if (hi > (uint64_t)g_heap) hi = (uint64_t)g_heap;
+             for (int i = 0; i < g_nmap; i++) {
+@@ -211,7 +240,7 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
+         // Total actually mapped in the alias region (one line per 256 MB crossed, up or down): how much physical memory the game uses and whether it keeps growing. Counted with a page bitmap, only pages whose state really changed --
+         // the SDK maps pages that are already mapped and unmaps ranges larger than what it mapped (Engage unmaps 0x1000000 and then 0x103f000 at the same address), so counting requested sizes went negative
+         { static _Atomic int64_t tot; int64_t d = alias_pages((uint64_t)(a - g_alias), size, num == 0x2C) << 12, before = atomic_fetch_add(&tot, d), after = before + d;
+-          if (before >> 28 != after >> 28) LOG("[mem] alias region mapped %.2f GB (application pool %.2f GB)", after / 1073741824.0, APP_POOL / 1073741824.0); }
++          if (before >> 28 != after >> 28) LOG("[mem] alias region mapped %.2f GB (application pool %.2f GB)", after / 1073741824.0, app_pool_bytes() / 1073741824.0); }
+         regs[0] = 0; return 0;
+     }
+     case 0x26: {  // Break(reason, ptr, size): SDK fatal abort
+@@ -235,9 +264,9 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
+         case I_PriorityMask: v = 0; break;
+         case I_AliasAddr: v = (uint64_t)g_alias; break;   case I_AliasSize: v = g_alias_cap; break;
+         case I_HeapAddr:  v = (uint64_t)g_heap;  break;   case I_HeapSize:  v = g_heap_cap;  break;
+-        case I_AslrAddr:  v = (uint64_t)g_as;    break;   case I_AslrSize:  v = RESERVE;     break;
++        case I_AslrAddr:  v = (uint64_t)g_as;    break;   case I_AslrSize:  v = g_reserve;   break;
+         case I_StackAddr: v = (uint64_t)g_stack; break;   case I_StackSize: v = g_stack_cap; break;
+-        case I_TotalMem: case I_TotalNonSys: v = APP_POOL; break;
++        case I_TotalMem: case I_TotalNonSys: v = app_pool_bytes(); break;
+         case I_UsedMem:  case I_UsedNonSys:  v = g_heap_cur + DM_GAME_MEM_USED + big_bss_bytes(); break;   // profile mem_used, 64 MB unless the game needs more (see mem_used in dm/games/README.md)
+         case I_SysResTotal: v = 0x2000000; break; case I_SysResUsed: v = 0x400000; break;
+         case I_DebuggerAttached: v = 0; break;
+diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
+index d96ff6f..5c6d11c 100644
+--- a/dm/ios/Sources/DmGamepad.m
++++ b/dm/ios/Sources/DmGamepad.m
+@@ -12,7 +12,9 @@
+ #import <GameController/GameController.h>
+ #import <CoreText/CoreText.h>
+ #include <pthread.h>
++#include "dm.h"
+ #include "dm_input.h"
++#include "dm_padmap.h"
+ #include "front.h"
+ #include "game_profile.h"
+ 
+@@ -363,14 +365,38 @@ - (void)refresh {   // pressed state → fill, sticks → knob position
+ 
+ // ---- Physical controllers ----
+ static int32_t axis(float v) { return (int32_t)(fmaxf(-1.f, fminf(1.f, v)) * 32767); }
+-static void read_pad(GCExtendedGamepad *g) {
++
++// The face buttons of a physical controller: the system gives the four of them by position
++// (buttonA bottom, buttonB right, buttonX left, buttonY top), not by the letter printed on the button,
++// so a Nintendo pad (Switch Pro, Joy-Con: A right / B bottom / X top / Y left) and an Xbox-layout pad
++// (PS5, Xbox: A bottom / B right / X left / Y top) need different letters for the game.
++// dm_padmap.h (shared with the Mac host) tells the two layouts apart by the product category / vendor
++// name. DM_PADMAP=nintendo|xbox forces the layout when the automatic detection gets it wrong
++// (the system does not always fill in the category on iOS).
++static int pad_kind(GCController *c) {
++    static int forced = -1;   // -1 = not read yet, otherwise DM_PADKIND_XBOX / DM_PADKIND_NINTENDO
++    if (forced < 0) {
++        forced = 0;
++        const char *e = getenv("DM_PADMAP");
++        if (e) {
++            if (!strcasecmp(e, "nintendo")) forced = DM_PADKIND_NINTENDO;
++            else if (!strcasecmp(e, "xbox")) forced = DM_PADKIND_XBOX;
++        }
++    }
++    if (forced) return forced;
++    return dm_padmap_kind(c.productCategory.UTF8String, c.vendorName.UTF8String);
++}
++
++static void read_pad(GCExtendedGamepad *g, int kind) {
+     uint64_t m = 0;
+-    #define K(btn, bit) if (btn.isPressed) m |= 1ull << bit
+-    K(g.buttonB, B_A); K(g.buttonA, B_B); K(g.buttonY, B_X); K(g.buttonX, B_Y);   // by position: right A, bottom B, top X, left Y
+-    K(g.leftShoulder, B_L); K(g.rightShoulder, B_R); K(g.leftTrigger, B_ZL); K(g.rightTrigger, B_ZR);
+-    K(g.buttonMenu, B_PLUS); if (g.buttonOptions) K(g.buttonOptions, B_MINUS);
+-    if (g.leftThumbstickButton) K(g.leftThumbstickButton, B_LS); if (g.rightThumbstickButton) K(g.rightThumbstickButton, B_RS);
+-    K(g.dpad.left, B_LEFT); K(g.dpad.up, B_UP); K(g.dpad.right, B_RIGHT); K(g.dpad.down, B_DOWN);
++    // by the glyph: a Nintendo pad has A right / B bottom / X top / Y left, an Xbox pad A bottom / B right / X left / Y top
++    m |= dm_padmap_face(kind, g.buttonA.isPressed, g.buttonB.isPressed, g.buttonX.isPressed, g.buttonY.isPressed);
++    #define K(btn, bit) if (btn.isPressed) m |= (bit)   // the DM_BTN_* values are masks, not bit indexes
++    K(g.leftShoulder, DM_BTN_L); K(g.rightShoulder, DM_BTN_R);
++    K(g.leftTrigger, DM_BTN_ZL); K(g.rightTrigger, DM_BTN_ZR);
++    K(g.buttonMenu, DM_BTN_PLUS); if (g.buttonOptions) K(g.buttonOptions, DM_BTN_MINUS);
++    if (g.leftThumbstickButton) K(g.leftThumbstickButton, DM_BTN_LS); if (g.rightThumbstickButton) K(g.rightThumbstickButton, DM_BTN_RS);
++    K(g.dpad.left, DM_BTN_LEFT); K(g.dpad.up, DM_BTN_UP); K(g.dpad.right, DM_BTN_RIGHT); K(g.dpad.down, DM_BTN_DOWN);
+     #undef K
+     pthread_mutex_lock(&g_mu);
+     g_pad_btn = m; g_pad_lx = axis(g.leftThumbstick.xAxis.value); g_pad_ly = axis(g.leftThumbstick.yAxis.value);
+@@ -381,8 +407,12 @@ static void read_pad(GCExtendedGamepad *g) {
+ - (void)padsChanged {
+     BOOL any = NO;
+     for (GCController *c in GCController.controllers) if (c.extendedGamepad) {
+-        any = YES; c.extendedGamepad.valueChangedHandler = ^(GCExtendedGamepad *g, GCControllerElement *el) { (void)el; read_pad(g); };
+-        read_pad(c.extendedGamepad);
++        any = YES;
++        int kind = pad_kind(c);
++        c.extendedGamepad.valueChangedHandler = ^(GCExtendedGamepad *g, GCControllerElement *el) { (void)el; read_pad(g, kind); };
++        read_pad(c.extendedGamepad, kind);
++        LOG("[gamepad] controller: vendor '%s', category '%s' -> %s layout", c.vendorName.UTF8String ?: "?", c.productCategory.UTF8String ?: "?",
++            kind == DM_PADKIND_NINTENDO ? "Nintendo (A right / B bottom / X top / Y left)" : "Xbox (A bottom / B right / X left / Y top)");
+     }
+     if (!any) { pthread_mutex_lock(&g_mu); g_pad_btn = 0; g_pad_lx = g_pad_ly = g_pad_rx = g_pad_ry = 0; pthread_mutex_unlock(&g_mu); publish(); }
+     dispatch_async(dispatch_get_main_queue(), ^{ self->_padOff = any; self->_controls.hidden = any; [self reset]; });
+diff --git a/scripts/build_ipa_from_nsp.py b/scripts/build_ipa_from_nsp.py
+index ecdd084..24f2396 100755
+--- a/scripts/build_ipa_from_nsp.py
++++ b/scripts/build_ipa_from_nsp.py
+@@ -13,7 +13,7 @@
+ # The shader translator is the in-repo dm/gfx/tools/dmsh_xlate_bin (the build whose fingerprints match dmsh_chain.lock; a rebuilt dll has different fingerprints and dmsh_build refuses it).
+ # The Python running this file needs lz4, capstone and fonttools; also needed: Xcode, xcodegen, .NET SDK 10, zstd, spirv-cross. A first run takes 2 (Metroid Dread) to 10 minutes (Breath of the Wild: 5 of them the shader split), longer when shader libraries must be compiled; a repeat run with unchanged inputs takes about 20 s (Metroid Dread), mostly packing the IPA. Key values are never printed.
+ # The console shows one line per stage ([k/n] stage, with a bar, done/total, percent, elapsed time and ETA where the work can be counted); the tools' own output goes only to logs/ (PROGRESS / --progress).
+-import collections, ctypes, getpass, hashlib, os, re, shlex, shutil, struct, subprocess, sys, tempfile, threading, time, types, zlib
++import collections, ctypes, getpass, hashlib, json, os, re, shlex, shutil, struct, subprocess, sys, tempfile, threading, time, types, zlib
+ from pathlib import Path
+ 
+ # ---- Settings ----
+@@ -87,11 +87,14 @@ class Progress:
+         with self.lock:
+             self.end()
+             self.k += 1; now = time.time()
+-            self.cur = types.SimpleNamespace(name=name, step=step, unit='', total=None, done=None, est=False, note='', t0=now, hist=collections.deque(), beat=now, pstop=None)
+-            if self.mode != 'bar': self._out(f'[{clock()}] [{self.k}/{self.n}] {name}' + (f' · {step}' if step else '') + ' …')
++            self.cur = types.SimpleNamespace(name=name, step=step, unit='', total=None, done=None, est=False, note='', t0=now, hist=collections.deque(), beat=now, pstop=None, jlast=0.0, jstep=None, jdone=None)
++            if self.mode == 'json':
++                self._json({'ev': 'stage', 'k': self.k, 'n': self.n, 'name': name, 'step': step, 't': round(now, 3)})
++            else:
++                if self.mode != 'bar': self._out(f'[{clock()}] [{self.k}/{self.n}] {name}' + (f' · {step}' if step else '') + ' …')
+             self.set(**kw)
+         if poll: self.watch(poll)
+-        if self.mode != 'off' and not self.ticker:
++        if self.mode not in ('off', 'json') and not self.ticker:
+             self.ticker = threading.Thread(target=self._tick, daemon=True); self.ticker.start()
+ 
+     def watch(self, poll):
+@@ -112,6 +115,7 @@ class Progress:
+             if step is not None and step != st.step:
+                 st.step, st.done, st.total, st.unit, st.est, st.note, st.beat = step, None, None, '', False, '', time.time(); st.hist.clear()
+                 if self.mode == 'lines': self._out(f'[{clock()}] [{self.k}/{self.n}] {st.name} · {step} …')
++                if self.mode == 'json': self._json({'ev': 'step', 'k': self.k, 'name': st.name, 'step': step})
+             if unit is not None: st.unit = unit
+             if total is not None: st.total = total
+             if est is not None: st.est = est
+@@ -119,6 +123,21 @@ class Progress:
+             if done is not None:
+                 st.done = done; now = time.time(); st.hist.append((now, done))
+                 while len(st.hist) > 2 and st.hist[1][0] < now - 60: st.hist.popleft()   # the ETA follows the rate of the last minute
++            if self.mode == 'json': self._json_progress(st)
++
++    def _json_progress(self, st):
++        """One progress event when the step or the count changed, and at most every 0.5 s otherwise: a GUI reads the stream, it does not need every poll"""
++        now = time.time()
++        if st.step == st.jstep and st.done == st.jdone and now - st.jlast < 0.5: return
++        st.jlast, st.jstep, st.jdone = now, st.step, st.done
++        self._json({'ev': 'progress', 'k': self.k, 'name': st.name, 'step': st.step, 'done': st.done, 'total': st.total,
++                    'unit': st.unit, 'est': st.est, 'note': st.note,
++                    'frac': (min(st.done / st.total, 0.99) if st.total and st.done is not None else None),
++                    'eta': self._eta(st), 'elapsed': round(now - st.t0, 3)})
++
++    def _json(self, obj):   # one JSON object per line on stdout (the machine-readable view of the build)
++        obj.setdefault('t', round(time.time(), 3))
++        print(json.dumps(obj, ensure_ascii=False), flush=True)
+ 
+     def end(self, summary='', ok=True):
+         """End the current stage with a ✓ (or ✗) line: its elapsed time and a summary"""
+@@ -126,10 +145,15 @@ class Progress:
+             st, self.cur = self.cur, None
+             if not st: return
+             if st.pstop: st.pstop.set()
++            if self.mode == 'json':
++                self._json({'ev': 'stage_end', 'k': self.k, 'name': st.name, 'ok': ok, 'summary': summary, 'elapsed': round(time.time() - st.t0, 3)})
++                return
+             self._out(f'[{clock()}] {"✓" if ok else "✗"} [{self.k}/{self.n}] {st.name} ({hms(time.time() - st.t0)})' + (f': {summary}' if summary else ''))
+ 
+     def say(self, msg):
+-        with self.lock: self._out(msg)
++        with self.lock:
++            if self.mode == 'json': self._json({'ev': 'say', 'msg': msg}); return
++            self._out(msg)
+ 
+     def close(self, ok=True):   # end the current stage and stop drawing
+         with self.lock: self.end(ok=ok); self.mode = 'off'
+@@ -203,9 +227,9 @@ class Progress:
+ PROG = Progress()
+ 
+ 
+-def progress_mode(want):   # auto: redraw in a terminal or in Spyder (IPython handles \r), plain lines when the output goes to a file or a pipe
+-    if want in ('bar', 'lines', 'off'): return want
+-    if want != 'auto': raise BuildError(f'PROGRESS / --progress must be auto, bar, lines or off: {want}')
++def progress_mode(want):   # auto: redraw in a terminal or in Spyder (IPython handles \r), plain lines when the output goes to a file or a pipe; json: one JSON object per line (a GUI reads this)
++    if want in ('bar', 'lines', 'off', 'json'): return want
++    if want != 'auto': raise BuildError(f'PROGRESS / --progress must be auto, bar, lines, json or off: {want}')
+     return 'bar' if in_ipython() or (sys.stdout and sys.stdout.isatty()) else 'lines'
+ 
+ 
+@@ -1082,7 +1106,7 @@ def parse_args(argv):
+     ap.add_argument('--profile-out', help='where the provisional profile goes (default: <NSP folder>/<title ID>_build/profile)')
+     ap.add_argument('--provisional', action='store_true', help='build from a provisional profile even when dm/games has one for the game (tests the guesses)')
+     ap.add_argument('--no-heap-check', action='store_true', help='a provisional profile: skip the heap check on the Mac (the alias / heap split stays a guess)')
+-    ap.add_argument('--progress', choices=('auto', 'bar', 'lines', 'off'), help='stage lines on the console: bar = one line per stage, redrawn in place; lines = a plain line every BEAT seconds; off = only each stage\'s start and end '
++    ap.add_argument('--progress', choices=('auto', 'bar', 'lines', 'json', 'off'), help='stage lines on the console: bar = one line per stage, redrawn in place; lines = a plain line every BEAT seconds; json = one JSON object per line (for a GUI); off = only each stage\'s start and end '
+                     '(default: the PROGRESS setting; auto = bar in a terminal or Spyder, lines when the output goes to a file or a pipe)')
+     return ap.parse_args(argv)
+ 
