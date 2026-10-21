@@ -20,3 +20,6 @@ nxnative/dm/tools/nx_extract/bin/
 
 # macOS
 .DS_Store
+
+# the repository's own Python environment (bootstrap.sh makes it)
+.venv/

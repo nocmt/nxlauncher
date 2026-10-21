@@ -48,14 +48,37 @@ need xcodegen   "brew install xcodegen"
 need zstd       "brew install zstd"
 need spirv-cross "brew install spirv-cross"
 need dotnet     "brew install --cask dotnet-sdk"
-need python3    "the one in the PATH"
+need python3    "the one in the PATH (the venv below is made from it)"
 need swift      "Xcode's toolchain"
-if python3 -c "import lz4, capstone" >/dev/null 2>&1; then say "  ✓ python3 has lz4 + capstone"
-else say "  ✗ python3 needs lz4 and capstone: python3 -m pip install lz4 capstone"; miss=1; fi
-if python3 -c "import fontTools" >/dev/null 2>&1; then say "  ✓ python3 has fontTools"
-else say "  ✗ python3 needs fontTools: python3 -m pip install fonttools"; miss=1; fi
-if python3 -c "import PIL" >/dev/null 2>&1; then say "  ✓ python3 has PIL (the .icns writer)"
-else say "  ✗ python3 needs Pillow: python3 -m pip install pillow"; miss=1; fi
+
+say
+say "=== the Python the upstream script needs ==="
+# The upstream packing script needs lz4, capstone and fontTools. The repository gets its own venv
+# (nothing is installed system wide, and the user's Python is left alone).
+VENV="$HERE/.venv"
+if [ ! -x "$VENV/bin/python3" ]; then
+  if [ $CHECK -eq 0 ]; then
+    say "  making the venv ..."
+    python3 -m venv "$VENV" || { say "  ✗ the venv could not be made"; miss=1; }
+  fi
+fi
+if [ -x "$VENV/bin/pip3" ] && [ $CHECK -eq 0 ]; then
+  say "  installing lz4 capstone fonttools pillow ..."
+  "$VENV/bin/pip3" install --quiet --upgrade lz4 capstone fonttools pillow || { say "  ✗ the install failed"; miss=1; }
+fi
+if [ -x "$VENV/bin/python3" ]; then
+  if "$VENV/bin/python3" -c "import lz4, capstone, fontTools" >/dev/null 2>&1; then
+    say "  ✓ $VENV/bin/python3 has lz4, capstone and fontTools"
+  else
+    say "  ✗ $VENV/bin/python3 is missing lz4 / capstone / fontTools"
+    miss=1
+  fi
+  if "$VENV/bin/python3" -c "import PIL" >/dev/null 2>&1; then say "  ✓ $VENV/bin/python3 has PIL (the .icns writer)"
+  else say "  ✗ $VENV/bin/python3 needs Pillow"; miss=1; fi
+else
+  say "  ✗ no venv at $VENV"
+  miss=1
+fi
 
 say
 say "=== building the launcher ==="

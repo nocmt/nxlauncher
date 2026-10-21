@@ -69,7 +69,9 @@ func decodeEvent(_ line: String) -> PipelineEvent? {
 }
 
 /// Runs the pipeline script and calls back for every event.
-final class Pipeline {
+/// It holds no mutable state (the process is local to run()), so it is safe to hand to a background
+/// queue.
+final class Pipeline: @unchecked Sendable {
     enum Failure: Error { case cannotRun(String), exited(Int) }
 
     private let toolsDir: URL

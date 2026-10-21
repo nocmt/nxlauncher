@@ -149,21 +149,27 @@ final class LauncherState: ObservableObject {
             statusText = "先选游戏文件夹和主机密钥"
             return
         }
+        // the values the background work needs are read here, on the main actor: the background
+        // closure must not touch the state (it would be a data race)
+        let dir = gameDir, keys = keysPath, pipeline = self.pipeline
         busy = true
         statusText = "编译中"
         logLines.removeAll()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self else { return }
             do {
-                try self.pipeline.run(["build", "--game-dir", self.gameDir, "--keys", self.keysPath]) { event in
-                    DispatchQueue.main.async { self.handle(event) }
+                try pipeline.run(["build", "--game-dir", dir, "--keys", keys]) { event in
+                    Task { @MainActor in self?.handle(event) }
                 }
-                DispatchQueue.main.async { self.statusText = "编译完成"; self.busy = false; self.refreshPlan() }
+                Task { @MainActor in
+                    self?.statusText = "编译完成"
+                    self?.busy = false
+                    self?.refreshPlan()
+                }
             } catch {
-                DispatchQueue.main.async {
-                    self.appendLog("编译失败：\(error.localizedDescription)")
-                    self.statusText = "编译失败"
-                    self.busy = false
+                Task { @MainActor in
+                    self?.appendLog("编译失败：\(error.localizedDescription)")
+                    self?.statusText = "编译失败"
+                    self?.busy = false
                 }
             }
         }
@@ -172,10 +178,11 @@ final class LauncherState: ObservableObject {
     func exportMacApp() {
         guard let plan, plan.built else { statusText = "还没有编译，先编译一次"; return }
         let out = URL(fileURLWithPath: exportDir).appendingPathComponent("\(supportName).app").path
-        runExport(target: "mac-app", out: out, extra: ["--game", plan.baseTitleID, "--ver", plan.version,
-                                                       "--work", plan.workDir, "--name", supportName,
-                                                       "--display", plan.name,
-                                                       "--dlc", dlcDir()].filter { !$0.isEmpty })
+        let extra = ["--game", plan.baseTitleID, "--ver", plan.version,
+                     "--work", plan.workDir, "--name", supportName,
+                     "--display", plan.name,
+                     "--dlc", dlcDir()].filter { !$0.isEmpty }
+        runExport(target: "mac-app", out: out, extra: extra)
     }
 
     func exportUnsignedIPA() {
@@ -185,20 +192,23 @@ final class LauncherState: ObservableObject {
     }
 
     private func runExport(target: String, out: String, extra: [String]) {
+        let pipeline = self.pipeline
         busy = true
         statusText = "导出中"
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self else { return }
             do {
-                try self.pipeline.run(["export", "--target", target, "--out", out] + extra) { event in
-                    DispatchQueue.main.async { self.handle(event) }
+                try pipeline.run(["export", "--target", target, "--out", out] + extra) { event in
+                    Task { @MainActor in self?.handle(event) }
                 }
-                DispatchQueue.main.async { self.statusText = "导出完成：\(out)"; self.busy = false }
+                Task { @MainActor in
+                    self?.statusText = "导出完成：\(out)"
+                    self?.busy = false
+                }
             } catch {
-                DispatchQueue.main.async {
-                    self.appendLog("导出失败：\(error.localizedDescription)")
-                    self.statusText = "导出失败"
-                    self.busy = false
+                Task { @MainActor in
+                    self?.appendLog("导出失败：\(error.localizedDescription)")
+                    self?.statusText = "导出失败"
+                    self?.busy = false
                 }
             }
         }

@@ -71,6 +71,30 @@ def find_repo(explicit):
     return None
 
 
+def find_python():
+    """The interpreter for the upstream script: it needs lz4, capstone and fontTools.
+
+    The repository's own venv (bootstrap.sh makes it) comes first, then NXLAUNCHER_PYTHON, then
+    whatever python3 is in the PATH."""
+    here = Path(__file__).resolve().parent.parent
+    cands = []
+    if os.environ.get('NXLAUNCHER_PYTHON'):
+        cands.append(Path(os.environ['NXLAUNCHER_PYTHON']))
+    cands += [here / '.venv' / 'bin' / 'python3', here / '.venv' / 'bin' / 'python',
+              Path('/usr/bin/python3'), Path(sys.executable)]
+    for c in cands:
+        if not c.exists():
+            continue
+        try:
+            out = subprocess.run([str(c), '-c', 'import lz4, capstone, fontTools'],
+                                 capture_output=True, timeout=20)
+            if out.returncode == 0:
+                return str(c)
+        except (OSError, subprocess.SubprocessError):
+            continue
+    return 'python3'      # the upstream script will report what is missing
+
+
 # ---- the game folder ----
 TITLE_RE = re.compile(r'\[([0-9A-Fa-f]{16})\]')
 DLC_RE = re.compile(r'\[DLC\]', re.I)
@@ -248,7 +272,7 @@ def cmd_build(args):
         emit(ev='error', message='prod.keys not found')
         return 2
 
-    py = sys.executable
+    py = find_python()
     cmd = [py, str(repo / 'scripts' / 'build_ipa_from_nsp.py'), str(game_dir),
            '-k', str(Path(args.keys).expanduser()), '--progress', 'json']
     if args.out:
