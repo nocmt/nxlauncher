@@ -32,6 +32,38 @@ final class LauncherState: ObservableObject {
     /// (env.txt, the saves), the way make-mac-app.sh builds it.
     @Published var gameAppPath: String = UserDefaults.standard.string(forKey: "gameAppPath") ?? ""
 
+    /// The operation mode: the handheld (720p, the Switch's touch screen exists) or the console
+    /// (1080p, no touch screen -- as on the Switch, where the console is hooked up to a television).
+    ///
+    /// The mode also decides what the mouse is: in handheld mode the mouse is the touch screen,
+    /// and since a console game like BotW has no touch UI at all, the mouse's left button is the
+    /// A button (the confirm button of the menus); in console mode there is no touch screen, so
+    /// the mouse is only a finger and the menus have to be driven with the keyboard or a pad.
+    enum OpMode: String, CaseIterable, Identifiable {
+        case handheld = "掌机模式（720p）"
+        case console = "主机模式（1080p）"
+        var id: String { rawValue }
+        /// The value of DM_OPMODE.
+        var code: Int { self == .handheld ? 0 : 1 }
+        /// Whether the mouse's left button is the confirm button (DM_MOUSE_PAD).
+        var mouseConfirms: Bool { self == .handheld }
+        /// The mode from the command line (--opmode handheld|console).
+        init?(argument: String) {
+            switch argument.lowercased() {
+            case "handheld", "0", "掌机": self = .handheld
+            case "console", "1", "主机": self = .console
+            default: return nil
+            }
+        }
+    }
+    @Published var opMode: OpMode = .handheld
+    /// The mode asked for on the command line (--opmode), if there was one.
+    var opModeArg: String?
+    /// A message that floats over the window for a few seconds.
+    @Published var toast: String? = nil
+    @Published var toastIsWarning: Bool = false
+    private var toastToken = 0
+
     enum Language: String, CaseIterable, Identifiable {
         case system = "跟随系统"
         case zhHans = "简体中文"
@@ -63,6 +95,7 @@ final class LauncherState: ObservableObject {
             case "--game-dir": gameDir = args[i + 1]; i += 2
             case "--keys": keysPath = args[i + 1]; i += 2
             case "--export-dir": exportDir = args[i + 1]; i += 2
+            case "--opmode": opModeArg = args[i + 1]; i += 2
             case "--launch": launchOnly = true; i += 1
             default: i += 1
             }
@@ -128,6 +161,9 @@ final class LauncherState: ObservableObject {
             if gameAppPath.isEmpty || !FileManager.default.fileExists(atPath: gameAppPath) {
                 gameAppPath = findGameApp()?.path ?? ""
             }
+            // Now that the .app (and with it the support folder) is known, read back what the
+            // game really runs with, so the window's picker shows the mode in effect.
+            loadEnv()
         case .games(let g):
             games = g
         case .stage(let name, let step):
@@ -302,6 +338,30 @@ final class LauncherState: ObservableObject {
         print("opened: \(NSWorkspace.shared.open(app))")
     }
 
+    /// Put the operation mode into effect from the command line, without the window:
+    ///   NxLauncher --opmode console
+    /// It prints the mode, the message the user would see, and the env.txt that was written, so a
+    /// script (or a test) can check it without clicking anything.
+    static func runOpModeFromCommandLine() {
+        let state = LauncherState()
+        guard let raw = state.opModeArg, let mode = OpMode(argument: raw) else {
+            print("usage: NxLauncher --opmode handheld|console")
+            return
+        }
+        // the support folder depends on the .app that is started, so find it first
+        state.refreshPlan()
+        if let app = state.findGameApp() { state.setGameApp(app) }
+        state.loadEnv()
+        print("mode: \(mode.rawValue) (DM_OPMODE=\(mode.code), DM_MOUSE_PAD=\(mode.mouseConfirms ? 1 : 0))")
+        print("message: \(state.setOpMode(mode))")
+        let file = state.supportDir.appendingPathComponent("env.txt")
+        print("env: \(file.path)")
+        if let text = try? String(contentsOf: file, encoding: .utf8) {
+            print("---")
+            print(text.trimmingCharacters(in: .newlines))
+        }
+    }
+
     // --- the settings the game reads ---
 
     /// The Application Support folder the Mac app uses (saves, log.txt, env.txt).
@@ -336,9 +396,9 @@ final class LauncherState: ObservableObject {
 
     /// Write the settings the game reads (env.txt in the support folder).
     ///
-    /// The lines the launcher owns (the frame rate, the language) are rewritten; every other
-    /// line is kept. Overwriting the whole file would silently drop what the user added by
-    /// hand (DM_PADMAP, DM_AUDIO, ...).
+    /// The lines the launcher owns (the frame rate, the language, the operation mode and the
+    /// mouse scheme) are rewritten; every other line is kept. Overwriting the whole file would
+    /// silently drop what the user added by hand (DM_PADMAP, DM_AUDIO, ...).
     func writeEnv() {
         let dir = supportDir
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -351,6 +411,7 @@ final class LauncherState: ObservableObject {
                 if line.isEmpty || line.hasPrefix("#") { continue }
                 let key = line.split(separator: "=", maxSplits: 1).first.map(String.init) ?? ""
                 if key == "DM_FPS_TARGET" || key == "DM_LANG" { continue }   // the launcher writes these
+                if key == "DM_OPMODE" || key == "DM_MOUSE_PAD" { continue }  // and these (the mode decides both)
                 if key == "DM_AUDIO" { hasAudio = true }
                 kept.append(line)
             }
@@ -361,9 +422,68 @@ final class LauncherState: ObservableObject {
         // The sound: the Mac host is silent unless DM_AUDIO=1 (on iOS it is on by default).
         // Only added when the user has not set it themselves.
         if !hasAudio { lines.append("DM_AUDIO=1") }
+        // The operation mode, and what the mouse is: in handheld mode the mouse is the touch
+        // screen (and the A button, since a console game has no touch UI at all); in console
+        // mode there is no touch screen, so the mouse can only be a finger.
+        lines.append("DM_OPMODE=\(opMode.code)")
+        lines.append("DM_MOUSE_PAD=\(opMode.mouseConfirms ? 1 : 0)")
         lines.append(contentsOf: kept)
         let text = lines.joined(separator: "\n") + "\n"
         try? text.write(to: file, atomically: true, encoding: .utf8)
+        appliedOpMode = opMode
         notify("设置已写入 \(appSupportName)/env.txt")
+    }
+
+    /// The mode that was last written to env.txt. The window's picker only applies a change when
+    /// it really differs from this, so reading the file back is not mistaken for a user change.
+    private var appliedOpMode: OpMode?
+
+    /// Read the settings the game reads back (the operation mode), so the window shows what is
+    /// really in effect.
+    func loadEnv() {
+        let file = supportDir.appendingPathComponent("env.txt")
+        guard let data = try? Data(contentsOf: file), let old = String(data: data, encoding: .utf8) else { return }
+        for raw in old.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("DM_OPMODE=") {
+                let v = Int(line.dropFirst("DM_OPMODE=".count)) ?? 0
+                opMode = v == 0 ? .handheld : .console
+                appliedOpMode = opMode
+            }
+        }
+    }
+
+    /// The operation mode was changed in the window: write it and say what it means.
+    func opModeChanged() {
+        // The read-back (loadEnv) also publishes the mode; that is not a user change, so it must
+        // not write the file again nor raise a toast.
+        guard appliedOpMode != opMode else { return }
+        setOpMode(opMode)
+    }
+
+    /// Put the mode into effect: write env.txt and say what it means.
+    @discardableResult
+    func setOpMode(_ mode: OpMode) -> String {
+        let changed = appliedOpMode != mode
+        opMode = mode
+        writeEnv()
+        let text = mode == .console
+            ? "已切换到主机模式：游戏按 1920×1080 渲染（窗口大于 1280×720 时更清晰）。"
+              + "Switch 主机没有触摸屏，所以鼠标左键的点击确认不可用，请用键盘（方向键选择、J 确认）或手柄。下次启动生效。"
+            : "已切换到掌机模式：游戏按 1280×720 渲染（与窗口 1:1，文字最锐），鼠标左键 = 确认键。下次启动生效。"
+        if changed { showToast(text, warning: mode == .console) }
+        return text
+    }
+
+    /// A message that floats over the window for a few seconds.
+    func showToast(_ text: String, warning: Bool = false) {
+        toast = text
+        toastIsWarning = warning
+        toastToken &+= 1
+        let token = toastToken
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 9_000_000_000)
+            if self.toastToken == token { self.toast = nil }
+        }
     }
 }

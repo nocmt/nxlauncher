@@ -6,34 +6,50 @@ struct ContentView: View {
     @EnvironmentObject var state: LauncherState
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    header
-                    progressStrip
-                    gameData
-                    settings
-                    log
+        ZStack(alignment: .bottomTrailing) {
+            VStack(spacing: 0) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        header
+                        progressStrip
+                        gameData
+                        settings
+                        log
+                    }
+                    .padding(18)
+                    .frame(maxWidth: 820, alignment: .leading)
+                    .frame(maxWidth: .infinity)
                 }
-                .padding(18)
-                .frame(maxWidth: 820, alignment: .leading)
-                .frame(maxWidth: .infinity)
+                .background(
+                    LinearGradient(colors: [Color(nsColor: .windowBackgroundColor),
+                                            Color(nsColor: .underPageBackgroundColor).opacity(0.35)],
+                                   startPoint: .top, endPoint: .bottom)
+                )
+                Divider()
+                actionBar
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 12)
+                    .background(.bar)
             }
-            .background(
-                LinearGradient(colors: [Color(nsColor: .windowBackgroundColor),
-                                        Color(nsColor: .underPageBackgroundColor).opacity(0.35)],
-                               startPoint: .top, endPoint: .bottom)
-            )
-            Divider()
-            actionBar
-                .padding(.horizontal, 18)
-                .padding(.vertical, 12)
-                .background(.bar)
+            .onAppear {
+                state.loadGames()
+                state.loadEnv()          // what is really in effect, from env.txt
+                if !state.gameDir.isEmpty { state.refreshPlan() }
+            }
+
+            // The toast: a message that floats over the window and disappears by itself. It sits in
+            // the bottom right corner, so it never covers the control that was just used.
+            if let text = state.toast {
+                Toast(text: text,
+                      systemImage: state.toastIsWarning ? "exclamationmark.triangle.fill"
+                                                        : "checkmark.circle.fill",
+                      color: state.toastIsWarning ? DS.warn : DS.ok)
+                    .padding(.trailing, 18)
+                    .padding(.bottom, 74)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
         }
-        .onAppear {
-            state.loadGames()
-            if !state.gameDir.isEmpty { state.refreshPlan() }
-        }
+        .animation(.easeOut(duration: 0.22), value: state.toast)
     }
 
     // MARK: - the progress strip (always visible)
@@ -230,6 +246,23 @@ struct ContentView: View {
                     .onChange(of: state.targetFPS) { _, _ in state.writeEnv() }
                 }
                 Divider().padding(.leading, 12)
+                settingRow("运行模式") {
+                    Picker("", selection: $state.opMode) {
+                        ForEach(LauncherState.OpMode.allCases) { m in Text(m.rawValue).tag(m) }
+                    }
+                    .labelsHidden()
+                    .frame(width: 190)
+                    .onChange(of: state.opMode) { _, _ in state.opModeChanged() }
+                }
+                // What the mode means, right under the picker: the choice is not obvious.
+                Text(modeHint)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 9)
+                Divider().padding(.leading, 12)
                 settingRow("导出目录") {
                     Text(state.exportDir)
                         .font(.system(size: 11, design: .monospaced))
@@ -263,6 +296,17 @@ struct ContentView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The meaning of the chosen mode, in one line: the resolution the game renders at, and what
+    /// the mouse does.
+    private var modeHint: String {
+        switch state.opMode {
+        case .handheld:
+            return "掌机模式：游戏按 1280×720 渲染（与窗口 1:1，文字最锐利）。Switch 掌机有触摸屏，鼠标左键 = 确认键，菜单可以直接点。"
+        case .console:
+            return "主机模式：游戏按 1920×1080 渲染（窗口大于 1280×720 时更清晰）。Switch 主机没有触摸屏，鼠标左键不能用于点击确认，菜单请用键盘（方向键选择、J 确认）或手柄。"
+        }
     }
 
     // MARK: - the action bar (always visible at the bottom)

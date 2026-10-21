@@ -23,6 +23,12 @@ struct NxLauncherApp: App {
 /// Sets the window title (SwiftUI has no scene modifier for it that works in a SwiftPM executable).
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // --opmode handheld|console: put the operation mode into effect, without a window
+        if CommandLine.arguments.contains("--opmode") {
+            LauncherState.runOpModeFromCommandLine()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { NSApp.terminate(nil) }
+            return
+        }
         // --launch: start the game from the command line, without a window
         if CommandLine.arguments.contains("--launch") {
             LauncherState.runLaunchFromCommandLine()

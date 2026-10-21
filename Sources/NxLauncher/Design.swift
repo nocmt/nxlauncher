@@ -167,7 +167,41 @@ struct Bar: View {
     }
 }
 
-// MARK: - small pieces
+// MARK: - the toast
+
+/// A short message that floats over the window and disappears by itself.
+struct Toast: View {
+    var text: String
+    var systemImage: String = "info.circle.fill"
+    var color: Color = DS.accent
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: systemImage)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(color)
+            Text(text)
+                .font(.system(size: 12.5))
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+                .multilineTextAlignment(.leading)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .frame(maxWidth: 480, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.97))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.09), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.20), radius: 16, x: 0, y: 6)
+    }
+}
+
+// MARK: - the small pieces
 
 /// A row of the game folder list: a state dot, the name, and the detail on the right.
 struct DataRow: View {
