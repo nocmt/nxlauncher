@@ -11,9 +11,9 @@ struct NxLauncherApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(state)
-                .frame(minWidth: 760, minHeight: 640)
+                .frame(minWidth: 780, minHeight: 700)
         }
-        .defaultSize(width: 860, height: 720)
+        .defaultSize(width: 880, height: 720)
         .commands {
             CommandGroup(replacing: .newItem) {}
         }
@@ -24,9 +24,9 @@ struct NxLauncherApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         DispatchQueue.main.async {
-            for w in NSApp.windows where w.title.isEmpty {
-                w.title = "NxLauncher"
-                w.setContentSize(NSSize(width: 860, height: 720))
+            for w in NSApp.windows {
+                if w.title.isEmpty { w.title = "NxLauncher" }
+                w.setContentSize(NSSize(width: 880, height: 720))
             }
         }
     }

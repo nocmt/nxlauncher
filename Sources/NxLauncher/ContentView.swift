@@ -6,22 +6,74 @@ struct ContentView: View {
     @EnvironmentObject var state: LauncherState
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                header
-                gameData
-                settings
-                actions
-                progress
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    header
+                    progressStrip
+                    gameData
+                    settings
+                    log
+                }
+                .padding(18)
+                .frame(maxWidth: 820, alignment: .leading)
+                .frame(maxWidth: .infinity)
             }
-            .padding(20)
-            .frame(maxWidth: 860, alignment: .leading)
-            .frame(maxWidth: .infinity)
+            .background(
+                LinearGradient(colors: [Color(nsColor: .windowBackgroundColor),
+                                        Color(nsColor: .underPageBackgroundColor).opacity(0.35)],
+                               startPoint: .top, endPoint: .bottom)
+            )
+            Divider()
+            actionBar
+                .padding(.horizontal, 18)
+                .padding(.vertical, 12)
+                .background(.bar)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
             state.loadGames()
             if !state.gameDir.isEmpty { state.refreshPlan() }
+        }
+    }
+
+    // MARK: - the progress strip (always visible)
+
+    private var progressStrip: some View {
+        HStack(spacing: 10) {
+            Text(state.stageName.isEmpty ? (state.busy ? "运行中" : "空闲 · 等待操作") : state.stageName)
+                .font(.system(size: 12, weight: .medium))
+                .frame(width: 90, alignment: .leading)
+                .lineLimit(1)
+            if !state.stepName.isEmpty {
+                Text(state.stepName)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            if let f = state.fraction {
+                Text("\(Int(f * 100))%")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            } else if state.busy {
+                Text("…")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: DS.small, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.small, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+        )
+        .overlay(alignment: .bottom) {
+            // nil = idle (an empty groove), a negative number = the count is unknown (a moving stripe).
+            Bar(fraction: state.busy ? (state.fraction ?? -1) : nil, height: 2.5)
+                .clipShape(RoundedRectangle(cornerRadius: DS.small, style: .continuous))
+                .padding(.horizontal, 1)
+                .offset(y: 1)
         }
     }
 
@@ -30,221 +82,245 @@ struct ContentView: View {
     private var header: some View {
         HStack(alignment: .center, spacing: 14) {
             icon
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(state.plan?.name ?? "NxLauncher")
-                    .font(.system(size: 26, weight: .semibold))
-                Text(state.statusText)
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 22, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+                StatusDot(text: statusLine, color: statusColor)
             }
-            Spacer()
+            Spacer(minLength: 10)
             Picker("", selection: $state.language) {
                 ForEach(LauncherState.Language.allCases) { l in Text(l.rawValue).tag(l) }
             }
             .labelsHidden()
-            .frame(width: 150)
+            .pickerStyle(.menu)
+            .frame(width: 140)
             .onChange(of: state.language) { _, _ in state.writeEnv() }
         }
+        .padding(.horizontal, 4)
+        .padding(.bottom, 2)
+    }
+
+    private var statusLine: String {
+        if state.busy { return state.statusText }
+        guard let p = state.plan else { return "还没有选择游戏文件夹" }
+        if !p.repoOK { return "找不到 nxnative 源码目录" }
+        if p.built { return "已就绪 · \(p.version)" }
+        return "还没有编译过"
+    }
+
+    private var statusColor: Color {
+        if state.busy { return DS.warn }
+        guard let p = state.plan else { return DS.idle }
+        if !p.repoOK { return DS.bad }
+        return p.built ? DS.ok : DS.warn
     }
 
     private var icon: some View {
         Group {
             if let path = state.plan?.icon, let image = NSImage(contentsOfFile: path) {
-                Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
+                Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
             } else {
-                Image(systemName: "gamecontroller").resizable().aspectRatio(contentMode: .fit).foregroundStyle(.secondary)
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(DS.tint(DS.accent))
+                    Image(systemName: "gamecontroller")
+                        .font(.system(size: 22, weight: .medium))
+                        .foregroundStyle(DS.accent)
+                }
             }
         }
-        .frame(width: 56, height: 56)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .frame(width: 58, height: 58)
+        .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.18), radius: 6, x: 0, y: 3)
     }
 
     // MARK: - the game folder
 
     private var gameData: some View {
-        card("游戏数据", systemImage: "folder") {
-            HStack {
+        Card(title: "游戏数据", systemImage: "folder") {
+            HStack(spacing: 8) {
                 Text(state.gameDir.isEmpty ? "还没有选择文件夹" : state.gameDir)
-                    .font(.system(size: 12, design: .monospaced))
+                    .font(.system(size: 11.5, design: .monospaced))
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .foregroundStyle(state.gameDir.isEmpty ? .secondary : .primary)
-                Spacer()
-                Button("打开") { state.refreshPlan() }.disabled(state.gameDir.isEmpty)
+                Spacer(minLength: 8)
+                Button("重新读取") { state.refreshPlan() }
+                    .buttonStyle(QuietButtonStyle())
+                    .disabled(state.gameDir.isEmpty)
                 Button("选择…") { pickGameFolder() }
+                    .buttonStyle(SecondaryButtonStyle())
             }
-            .padding(.bottom, 6)
 
             VStack(spacing: 0) {
-                fileRow("游戏本体", state.plan?.base ?? "", ok: !(state.plan?.base ?? "").isEmpty)
-                Divider()
-                fileRow("更新包", (state.plan?.updates ?? []).first.map(Plan.fileName) ?? "",
-                        ok: !(state.plan?.updates ?? []).isEmpty)
-                Divider()
-                fileRow("追加内容", (state.plan?.dlc ?? []).map(Plan.fileName).joined(separator: ", "),
-                        ok: !(state.plan?.dlc ?? []).isEmpty)
-                Divider()
-                fileRow("Mac 游戏代码", state.plan?.hasPort == true ? "已就绪 · \(state.plan?.version ?? "")" : "没有移植档案",
-                        ok: state.plan?.hasPort == true)
-                Divider()
-                fileRow("着色器缓存", state.plan?.built == true ? "已编译（可直接导出）" : "未编译（首次要 30–60 分钟）",
-                        ok: state.plan?.built == true)
-                Divider()
-                HStack {
-                    Label("主机密钥", systemImage: "key")
-                    Spacer()
+                DataRow(title: "游戏本体", detail: Plan.fileName(state.plan?.base ?? ""),
+                        state: (state.plan?.base ?? "").isEmpty ? .idle : .ok)
+                Divider().padding(.leading, 12)
+                DataRow(title: "更新包", detail: (state.plan?.updates ?? []).map(Plan.fileName).joined(separator: ", "),
+                        state: (state.plan?.updates ?? []).isEmpty ? .idle : .ok)
+                Divider().padding(.leading, 12)
+                DataRow(title: "追加内容", detail: (state.plan?.dlc ?? []).map(Plan.fileName).joined(separator: ", "),
+                        state: (state.plan?.dlc ?? []).isEmpty ? .idle : .ok)
+                Divider().padding(.leading, 12)
+                DataRow(title: "移植档案", detail: state.plan?.hasPort == true ? "已就绪 · \(state.plan?.version ?? "")" : "没有移植档案",
+                        state: state.plan?.hasPort == true ? .ok : .warn)
+                Divider().padding(.leading, 12)
+                DataRow(title: "着色器缓存", detail: state.plan?.built == true ? "已编译（可直接导出）" : "未编译（首次要 30–60 分钟）",
+                        state: state.plan?.built == true ? .ok : .idle)
+                Divider().padding(.leading, 12)
+                HStack(spacing: 10) {
+                    Image(systemName: "key")
+                        .font(.system(size: 13))
+                        .foregroundStyle(state.keysPath.isEmpty ? DS.idle : DS.ok)
+                    Text("主机密钥").font(.system(size: 13))
+                    Spacer(minLength: 12)
                     Text(state.keysPath.isEmpty ? "还没有选择" : (state.keysPath as NSString).lastPathComponent)
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.secondary)
                     Button("选择…") { pickKeys() }
+                        .buttonStyle(QuietButtonStyle())
                 }
-                .padding(.vertical, 7)
-                Divider()
-                HStack {
-                    Label("固件", systemImage: "cpu")
-                    Spacer()
-                    Text("不需要（流水线只认 prod.keys）").font(.system(size: 11)).foregroundStyle(.secondary)
-                }
-                .padding(.vertical, 7)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
             }
-            .background(Color(nsColor: .textBackgroundColor).opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+            .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: DS.small, style: .continuous))
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             if let notes = state.plan?.notes, !notes.isEmpty {
                 VStack(alignment: .leading, spacing: 3) {
                     ForEach(notes, id: \.self) { n in
-                        Text("· " + n).font(.system(size: 11)).foregroundStyle(.secondary)
+                        HStack(alignment: .top, spacing: 5) {
+                            Text("·").foregroundStyle(DS.warn)
+                            Text(n).font(.system(size: 11)).foregroundStyle(.secondary)
+                        }
                     }
                 }
-                .padding(.top, 6)
+                .padding(.top, 2)
             }
         }
-    }
-
-    private func fileRow(_ title: String, _ detail: String, ok: Bool) -> some View {
-        HStack {
-            Image(systemName: ok ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(ok ? Color.green : Color.secondary)
-            Text(title)
-            Spacer()
-            Text(detail.isEmpty ? "—" : detail)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
     }
 
     // MARK: - the settings
 
     private var settings: some View {
-        card("设置", systemImage: "slider.horizontal.3") {
-            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 10) {
-                GridRow {
-                    Text("目标帧率")
+        Card(title: "设置", systemImage: "slider.horizontal.3") {
+            VStack(spacing: 0) {
+                settingRow("目标帧率") {
                     Picker("", selection: $state.targetFPS) {
                         Text("60 帧").tag(60)
                         Text("30 帧（省电）").tag(30)
                     }
                     .labelsHidden()
-                    .frame(width: 180)
+                    .frame(width: 160)
                     .onChange(of: state.targetFPS) { _, _ in state.writeEnv() }
                 }
-                GridRow {
-                    Text("导出目录")
+                Divider().padding(.leading, 12)
+                settingRow("导出目录") {
                     Text(state.exportDir)
                         .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Button("选择…") { pickExportDir() }
+                    Spacer(minLength: 8)
+                    Button("选择…") { pickExportDir() }.buttonStyle(QuietButtonStyle())
                 }
-                GridRow {
-                    Text("工具目录")
+                Divider().padding(.leading, 12)
+                settingRow("工具目录") {
                     Text(state.home.path)
                         .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Button("重新读取") { state.refreshPlan() }
+                    Spacer(minLength: 8)
+                    Button("重新读取") { state.refreshPlan() }.buttonStyle(QuietButtonStyle())
                 }
             }
+            .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: DS.small, style: .continuous))
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    // MARK: - the buttons
+    private func settingRow<C: View>(_ title: String, @ViewBuilder content: () -> C) -> some View {
+        HStack(spacing: 10) {
+            Text(title).font(.system(size: 13)).frame(width: 72, alignment: .leading)
+            content()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
 
-    private var actions: some View {
-        HStack(spacing: 12) {
+    // MARK: - the action bar (always visible at the bottom)
+
+    private var actionBar: some View {
+        HStack(spacing: 10) {
+            Text(actionHint)
+                .font(.system(size: 11.5))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 8)
             Button {
                 if state.plan?.built == true { state.launchGame() } else { state.startBuild() }
             } label: {
-                Label(state.plan?.built == true ? "开始游戏" : "开始编译", systemImage: "play.fill")
-                    .frame(maxWidth: .infinity)
+                Label(state.plan?.built == true ? "开始游戏" : "开始编译",
+                      systemImage: state.plan?.built == true ? "play.fill" : "hammer.fill")
             }
-            .controlSize(.large)
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(PrimaryButtonStyle(enabled: !state.busy))
+            .frame(width: 148)
             .disabled(state.busy)
 
             Button { state.exportMacApp() } label: {
                 Label("导出 .app", systemImage: "app.dashed")
             }
-            .controlSize(.large)
+            .buttonStyle(SecondaryButtonStyle())
             .disabled(state.busy || state.plan?.built != true)
 
             Button { state.exportUnsignedIPA() } label: {
                 Label("导出 IPA", systemImage: "square.and.arrow.down")
             }
-            .controlSize(.large)
+            .buttonStyle(SecondaryButtonStyle())
             .disabled(state.busy || state.plan?.built != true)
         }
     }
 
-    // MARK: - the progress
+    /// The one line on the left of the action bar: what the buttons will do.
+    private var actionHint: String {
+        if state.busy {
+            return state.stageName.isEmpty ? "处理中，请勿关闭" : "\(state.stageName) · 请勿关闭"
+        }
+        guard let p = state.plan else { return "先选择一个游戏文件夹" }
+        if !p.repoOK { return "找不到 nxnative 源码目录" }
+        return p.built ? "已编译 · \(p.version) · 可以直接开始游戏" : "首次编译需要 30–60 分钟"
+    }
 
-    private var progress: some View {
-        card("进度", systemImage: "chart.bar") {
-            if let f = state.fraction {
-                ProgressView(value: f) { Text(state.stageName) } currentValueLabel: {
-                    Text("\(Int(f * 100))%")
-                }
-            } else if !state.stageName.isEmpty {
-                ProgressView() { Text(state.stageName) }
-            } else {
-                Text(state.stepName.isEmpty ? "空闲" : state.stepName)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            }
-            if !state.progressNote.isEmpty {
-                Text(state.progressNote).font(.system(size: 11)).foregroundStyle(.secondary)
-            }
+    // MARK: - the log
+
+    private var log: some View {
+        Card(title: "日志", systemImage: "text.alignleft") {
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(Array(state.logLines.enumerated()), id: \.offset) { _, line in
                         Text(line)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(line.hasPrefix("✗") ? .red : .secondary)
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(line.hasPrefix("✗") ? DS.bad : .secondary)
                             .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if state.logLines.isEmpty {
+                        Text("还没有输出。").font(.system(size: 10.5)).foregroundStyle(.tertiary)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(8)
             }
-            .frame(minHeight: 90, maxHeight: 180)
-            .background(Color(nsColor: .textBackgroundColor).opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
-            .padding(.top, 4)
+            .frame(minHeight: 64, maxHeight: 140)
+            .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: DS.small, style: .continuous))
         }
-    }
-
-    // MARK: - the card
-
-    private func card<Content: View>(_ title: String, systemImage: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label(title, systemImage: systemImage)
-                .font(.system(size: 14, weight: .medium))
-            content()
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
     }
 
     // MARK: - the panels
