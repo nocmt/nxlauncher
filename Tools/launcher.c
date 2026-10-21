@@ -121,6 +121,15 @@ int main(int argc, char **argv) {
         fclose(ef);
     }
 
+    // The sound: the host itself stays silent on the Mac unless DM_AUDIO=1 (upstream keeps the silent
+    // sink as the default there, because the automatic checks would make noise). The product needs
+    // sound, so when env.txt says nothing about it, turn it on here. env.txt is read above, so
+    // DM_AUDIO=0 in env.txt still wins.
+    if (!getenv("DM_AUDIO")) {
+        setenv("DM_AUDIO", "1", 1);
+        fprintf(stderr, "env: DM_AUDIO=1 (the default: the real audio output)\n");
+    }
+
     // keep the host's output in the log (the iOS app writes log.txt the same way)
     int fd = open(log, O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (fd >= 0) {

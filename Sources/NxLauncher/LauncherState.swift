@@ -248,14 +248,35 @@ final class LauncherState: ObservableObject {
     }
 
     /// Write the settings the game reads (env.txt in the support folder).
+    ///
+    /// The lines the launcher owns (the frame rate, the language) are rewritten; every other
+    /// line is kept. Overwriting the whole file would silently drop what the user added by
+    /// hand (DM_PADMAP, DM_AUDIO, ...).
     func writeEnv() {
         let dir = supportDir
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let file = dir.appendingPathComponent("env.txt")
+        var kept: [String] = []
+        var hasAudio = false
+        if let data = try? Data(contentsOf: file), let old = String(data: data, encoding: .utf8) {
+            for raw in old.split(separator: "\n", omittingEmptySubsequences: false) {
+                let line = raw.trimmingCharacters(in: .whitespaces)
+                if line.isEmpty || line.hasPrefix("#") { continue }
+                let key = line.split(separator: "=", maxSplits: 1).first.map(String.init) ?? ""
+                if key == "DM_FPS_TARGET" || key == "DM_LANG" { continue }   // the launcher writes these
+                if key == "DM_AUDIO" { hasAudio = true }
+                kept.append(line)
+            }
+        }
         var lines: [String] = ["# written by NxLauncher"]
         lines.append("DM_FPS_TARGET=\(targetFPS)")
         if let code = language.code { lines.append("DM_LANG=\(code)") }
+        // The sound: the Mac host is silent unless DM_AUDIO=1 (on iOS it is on by default).
+        // Only added when the user has not set it themselves.
+        if !hasAudio { lines.append("DM_AUDIO=1") }
+        lines.append(contentsOf: kept)
         let text = lines.joined(separator: "\n") + "\n"
-        try? text.write(to: dir.appendingPathComponent("env.txt"), atomically: true, encoding: .utf8)
-        statusText = "设置已写入 \(dir.appendingPathComponent("env.txt").path)"
+        try? text.write(to: file, atomically: true, encoding: .utf8)
+        statusText = "设置已写入 \(file.path)"
     }
 }
