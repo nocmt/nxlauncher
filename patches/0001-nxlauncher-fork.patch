@@ -154,7 +154,7 @@ index 0000000..216d318
 +    publish();
 +}
 diff --git a/dm/host/front_mac.m b/dm/host/front_mac.m
-index b2017ec..36a23d4 100644
+index b2017ec..aa3475d 100644
 --- a/dm/host/front_mac.m
 +++ b/dm/host/front_mac.m
 @@ -1,8 +1,11 @@
@@ -169,7 +169,7 @@ index b2017ec..36a23d4 100644
  #import <Metal/Metal.h>
  #include "dm.h"
  #include "dm_input.h"
-@@ -15,8 +18,23 @@
+@@ -15,8 +18,30 @@
  #include <signal.h>
  
  static CAMetalLayer *g_layer;
@@ -185,7 +185,14 @@ index b2017ec..36a23d4 100644
 +static int g_fps_on;
 +static int g_mouse_diag;                 // the mouse diagnostic (DM_MOUSE_DIAG=1)
 +static long g_mouse_events;              // the mouse events the application received
++static long g_mouse_clicks;              // the button presses among them
 +static NSWindow *g_win;                  // the game window (for the diagnostic)
++// DM_MOUSE_PAD=1: the mouse is a controller, not a finger. Games that have a touchscreen (the
++// Switch's touch games) are played with the mouse as a finger; a console game (BotW imports no
++// touch function at all: its 31 nn::hid imports are the controller ones) has no pointer UI, so
++// there the mouse's left button is the A button (the confirm button of the menus).
++static int g_mouse_pad;
++static uint64_t g_mouse_btn;              // the buttons the mouse contributes
 +
 +// The corner radius of the window. The picture is clipped to the same radius, so its square
 +// corners do not cover the rounded ones the system draws.
@@ -193,12 +200,12 @@ index b2017ec..36a23d4 100644
  
  void *front_metal_layer(void) { return (__bridge void *)g_layer; }
  // The original game's 16:9 constants, behavior unchanged; DM_GAME_RES=<width>x<height> (docked mode; handheld scaled by 720/900) is only for side-by-side comparison with iOS widescreen
-@@ -28,8 +46,64 @@ uint64_t front_game_res(int docked) {
+@@ -28,8 +53,72 @@ uint64_t front_game_res(int docked) {
  
  static void push(void) {
      int32_t lx = (g_d - g_a) * 32767, ly = (g_w - g_s) * 32767;
 -    dm_input_set(g_btn, lx, ly, 0, 0);
-+    dm_input_set(g_btn, lx, ly, g_look_x, g_look_y);
++    dm_input_set(g_btn | g_mouse_btn, lx, ly, g_look_x, g_look_y);
 +}
 +// The mouse movement becomes the right stick (the camera). The stick stays deflected while the mouse moves and returns to the center a moment after it stops.
 +static int g_mouse_seen;
@@ -229,19 +236,27 @@ index b2017ec..36a23d4 100644
 +- (NSView *)hitTest:(NSPoint)p { return NSPointInRect(p, self.bounds) ? self : nil; }
 +// A finger on the touchscreen (front.h dm_touch_set): the left button down / drag = finger 0 at the
 +// normalized coordinates, the release = lifted.
++// With DM_MOUSE_PAD the mouse is not a finger but the A button (a console game has no touch UI).
 +- (void)mouseDown:(NSEvent *)e {
++    if (g_mouse_pad) { g_mouse_btn |= DM_BTN_A; push(); if (g_mouse_diag) LOG("[ui] the picture: the mouse is the A button (pressed)"); return; }
 +    NSPoint p = [self convertPoint:e.locationInWindow fromView:nil]; NSSize sz = self.bounds.size;
 +    if (sz.width <= 0 || sz.height <= 0) return;
 +    dm_touch t = {0, (float)(p.x / sz.width), (float)(1.0 - p.y / sz.height)};   // The AppKit view origin is at bottom left, the touchscreen origin is at top left
++    if (g_mouse_diag) LOG("[ui] the picture: the press at %.0f,%.0f becomes the touch at %.3f,%.3f", p.x, p.y, t.x, t.y);
 +    dm_touch_set(&t, 1);
 +}
 +- (void)mouseDragged:(NSEvent *)e {
++    if (g_mouse_pad) return;   // the A button stays pressed
 +    NSPoint p = [self convertPoint:e.locationInWindow fromView:nil]; NSSize sz = self.bounds.size;
 +    if (sz.width <= 0 || sz.height <= 0) return;
 +    dm_touch t = {0, (float)(p.x / sz.width), (float)(1.0 - p.y / sz.height)};
 +    dm_touch_set(&t, 1);
  }
-+- (void)mouseUp:(NSEvent *)e { dm_touch_set(NULL, 0); }
++- (void)mouseUp:(NSEvent *)e {
++    if (g_mouse_pad) { g_mouse_btn &= ~DM_BTN_A; push(); if (g_mouse_diag) LOG("[ui] the picture: the mouse is the A button (released)"); return; }
++    if (g_mouse_diag) LOG("[ui] the picture: the release (the finger is lifted)");
++    dm_touch_set(NULL, 0);
++}
 +// The right button = the camera (the right stick): it deflects while the mouse moves and returns to
 +// the center a moment after the mouse stops.
 +- (void)rightMouseDown:(NSEvent *)e { g_mouse_seen = 1; g_last_mouse = [self convertPoint:e.locationInWindow fromView:nil]; }
@@ -259,7 +274,7 @@ index b2017ec..36a23d4 100644
  static int key_bit(unsigned short code) {
      switch (code) {
          case 38: return 0;  case 40: return 1;  case 32: return 2;  case 34: return 3;    // J K U I → A B X Y
-@@ -48,6 +122,56 @@ static void on_key(NSEvent *e, int down) {
+@@ -48,6 +137,56 @@ static void on_key(NSEvent *e, int down) {
      push();
  }
  
@@ -290,9 +305,9 @@ index b2017ec..36a23d4 100644
 +        static int tick_count; if (++tick_count % 30 == 0 && g_win) {
 +            NSPoint m = [NSEvent mouseLocation];
 +            NSRect f = [g_win frame];
-+            LOG("[ui] the app is %s, the window is key=%d main=%d, the mouse is at %.0f,%.0f (the window's frame is %.0f,%.0f %.0fx%.0f), the mouse events so far: %ld",
++            LOG("[ui] the app is %s, the window is key=%d main=%d, the mouse is at %.0f,%.0f (the window's frame is %.0f,%.0f %.0fx%.0f), the mouse events so far: %ld (the button events: %ld)",
 +                NSApp.isActive ? "active" : "in the background", (int)g_win.isKeyWindow, (int)g_win.isMainWindow,
-+                m.x, m.y, f.origin.x, f.origin.y, f.size.width, f.size.height, g_mouse_events);
++                m.x, m.y, f.origin.x, f.origin.y, f.size.width, f.size.height, g_mouse_events, g_mouse_clicks);
 +        }
 +    }
 +    if (!g_fps_label) return;
@@ -316,7 +331,7 @@ index b2017ec..36a23d4 100644
  typedef struct { void (*fn)(void); } guest_arg;
  static void *guest_tramp(void *p) {
      static char alt[65536];                       // The signal alternate stack is per thread; crash printing must also work on the guest thread
-@@ -55,51 +179,119 @@ static void on_key(NSEvent *e, int down) {
+@@ -55,51 +194,128 @@ static void on_key(NSEvent *e, int down) {
      ((guest_arg *)p)->fn(); LOG("guest thread finished"); exit(0);
  }
  
@@ -347,6 +362,8 @@ index b2017ec..36a23d4 100644
 -        NSView *v = win.contentView;
 -        v.wantsLayer = YES;
 +        g_win = win;
++        { const char *e = getenv("DM_MOUSE_PAD"); g_mouse_pad = e && atoi(e) != 0;
++          if (g_mouse_pad) LOG("[ui] the mouse is a controller: the left button is the A button"); }
 +        win.minSize = NSMakeSize(640, 360);   // the picture is scaled to fit, so any size works
 +        win.acceptsMouseMovedEvents = YES;   // the mouse movement without a button (the camera) is only delivered when the window asks for it
 +        DmGameView *v = [[DmGameView alloc] initWithFrame:r];
@@ -418,9 +435,16 @@ index b2017ec..36a23d4 100644
 +        { const char *e = getenv("DM_MOUSE_DIAG");
 +          if (e && *e && *e != '0') {
 +            g_mouse_diag = 1;
-+            [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskMouseMoved | NSEventMaskLeftMouseDragged handler:^NSEvent *(NSEvent *e) {
++            [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp | NSEventMaskMouseMoved | NSEventMaskLeftMouseDragged handler:^NSEvent *(NSEvent *e) {
 +                g_mouse_events++;
-+                if (g_mouse_events <= 6 || g_mouse_events % 200 == 0)
++                int click = (e.type == NSEventTypeLeftMouseDown || e.type == NSEventTypeRightMouseDown ||
++                             e.type == NSEventTypeLeftMouseUp || e.type == NSEventTypeRightMouseUp);
++                if (click) {
++                    g_mouse_clicks++;   // every button press and release is logged: they are rare and they matter
++                    LOG("[ui] mouse: type %d at %.0f,%.0f in the window (the app is %s, the window is key=%d main=%d), the %ldth button event",
++                        (int)e.type, e.locationInWindow.x, e.locationInWindow.y,
++                        NSApp.isActive ? "active" : "in the background", (int)win.isKeyWindow, (int)win.isMainWindow, g_mouse_clicks);
++                } else if (g_mouse_events <= 6 || g_mouse_events % 200 == 0)
 +                    LOG("[ui] mouse: type %d at %.0f,%.0f in the window (the app is %s, the window is key=%d main=%d)",
 +                        (int)e.type, e.locationInWindow.x, e.locationInWindow.y,
 +                        NSApp.isActive ? "active" : "in the background", (int)win.isKeyWindow, (int)win.isMainWindow);
@@ -450,11 +474,37 @@ index b2017ec..36a23d4 100644
          pthread_t th; if (pthread_create(&th, &a, guest_tramp, &ga)) die("pthread_create guest");
          [NSApp run];
      }
+diff --git a/dm/host/hle_hid.c b/dm/host/hle_hid.c
+index 4dfaf12..ab57c4b 100644
+--- a/dm/host/hle_hid.c
++++ b/dm/host/hle_hid.c
+@@ -213,6 +213,11 @@ HLE_FORCE("_ZN2nn3hid28ShowControllerFirmwareUpdateERKNS0_27ControllerFirmwareUp
+ // without checking the mode, so in console mode the state stays empty (only the header is written). Super Mario Galaxy's pointer is the touch screen in handheld mode
+ int touch_fill_n(void *out, int max, uint64_t now_ns);
+ static void touch_read(void *s, int n) {
++    // DM_TOUCH_LOG=1: the reads themselves (does the game ask for the touch state at all, and in
++    // which operation mode) plus the points it gets (in hle_touch.c).
++    static long reads; reads++;
++    static int lg = -1; if (lg < 0) lg = getenv("DM_TOUCH_LOG") != NULL;
++    if (lg && (reads <= 4 || reads % 300 == 0)) LOG("[hid] the game reads the touch screen state (read %ld, the operation mode is %d, %d slots)", reads, dm_opmode(), n);
+     if (dm_opmode() == 0) { touch_fill_n(s, n, now_ns()); return; }
+     int64_t *p = s; p[0] = atomic_fetch_add(&g_sampling, 1) + 1; ((int32_t *)s)[2] = 0; ((int32_t *)s)[3] = 0;
+ }
 diff --git a/dm/host/hle_oe.c b/dm/host/hle_oe.c
-index f14c9d3..914b1bd 100644
+index f14c9d3..8180815 100644
 --- a/dm/host/hle_oe.c
 +++ b/dm/host/hle_oe.c
-@@ -297,10 +297,16 @@ HLE_FORCE("_ZN2nn2oe42SetOperationModeChangedNotificationEnabledEb", "operation
+@@ -9,7 +9,8 @@
+ static _Atomic int g_opmode = -1;
+ int dm_opmode(void) {
+     int m = g_opmode;
+-    if (m < 0) { const char *e = getenv("DM_OPMODE"); int v = e ? atoi(e) : DM_GAME_OPMODE; int exp = -1; atomic_compare_exchange_strong(&g_opmode, &exp, v); m = g_opmode; }
++    if (m < 0) { const char *e = getenv("DM_OPMODE"); int v = e ? atoi(e) : DM_GAME_OPMODE; int exp = -1; atomic_compare_exchange_strong(&g_opmode, &exp, v); m = g_opmode;
++        LOG("[oe] the operation mode is %d (%s): DM_OPMODE=%s, the profile's is %d", m, m == 0 ? "handheld" : "console", e ? e : "(not set)", DM_GAME_OPMODE); }
+     return m;
+ }
+ // ---------- System notification queue (AppletMessage): front end state changes → fetched by the game every frame with TryPopNotificationMessage ----------
+@@ -297,10 +298,16 @@ HLE_FORCE("_ZN2nn2oe42SetOperationModeChangedNotificationEnabledEb", "operation
  HLE_FORCE("_ZN2nn2oe44SetPerformanceModeChangedNotificationEnabledEb", "performance mode change notification switch", void, h_oe_SetPerfModeNtf, unsigned on) { g_ntf_perfmode = on & 0xff; }
  
  // nn::settings::LanguageCode = struct { char string[8]; }, 8 bytes returned by value in x0
