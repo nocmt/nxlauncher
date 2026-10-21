@@ -208,3 +208,108 @@ struct StatusDot: View {
         }
     }
 }
+
+// MARK: - the files in the game folder
+
+/// A group of files in the game folder: the base game, the updates, the DLC.
+///
+/// A folder can hold several updates and several DLC, and one row cannot hold all their names, so:
+/// one file shows its name in place; several files show how many there are, and opening the row
+/// lists them one by one -- the title ID first, because it always fits.
+struct FileGroupRow: View {
+    var title: String
+    var files: [GameFile]
+    var state: DataRow.State
+    var open: Bool = false
+
+    @State private var opened: Bool
+
+    init(title: String, files: [GameFile], state: DataRow.State, open: Bool = false) {
+        self.title = title
+        self.files = files
+        self.state = state
+        self.open = open
+        _opened = State(initialValue: open)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            if opened {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(files.prefix(10)) { f in
+                        fileLine(f)
+                    }
+                    if files.count > 10 {
+                        Text("…还有 \(files.count - 10) 个")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .padding(.leading, 33)
+                .padding(.trailing, 12)
+                .padding(.bottom, 9)
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            Image(systemName: state == .ok ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 13))
+                .foregroundStyle(state == .ok ? DS.ok : (state == .warn ? DS.warn : DS.idle))
+            Text(title)
+                .font(.system(size: 13))
+            Spacer(minLength: 12)
+            if files.count > 1 {
+                Text("\(files.count) 个")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Button { toggle() } label: {
+                    Image(systemName: opened ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 16, height: 16)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(opened ? "收起" : "看看这 \(files.count) 个文件")
+            } else {
+                Text(files.first?.name ?? "—")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard files.count > 1 else { return }
+            toggle()
+        }
+    }
+
+    private func toggle() {
+        withAnimation(.easeOut(duration: 0.18)) { opened.toggle() }
+    }
+
+    /// One file: the title ID (it always fits) and then the name without it.
+    private func fileLine(_ f: GameFile) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(f.titleID)
+                .font(.system(size: 10.5, design: .monospaced))
+                .foregroundStyle(DS.accent)
+                .fixedSize()
+            Text(f.label)
+                .font(.system(size: 10.5, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 0)
+        }
+        .help(f.path)
+        .textSelection(.enabled)
+    }
+}

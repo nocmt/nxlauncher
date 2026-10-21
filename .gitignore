@@ -23,3 +23,5 @@ nxnative/dm/tools/nx_extract/bin/
 
 # the repository's own Python environment (bootstrap.sh makes it)
 .venv/
+__pycache__/
+*.pyc

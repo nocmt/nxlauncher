@@ -98,6 +98,11 @@ def find_python():
 # ---- the game folder ----
 TITLE_RE = re.compile(r'\[([0-9A-Fa-f]{16})\]')
 DLC_RE = re.compile(r'\[DLC\]', re.I)
+# The dump tools name a cartridge "… [v.xci" (the bracket is never closed) and a package "… .nsp",
+# so the extension is matched on the end of the name rather than on Path.suffix -- a file written
+# as "… [v.xci]" would be skipped by suffix (its suffix is ".xci]").
+EXT_RE = re.compile(r'\.(nsp|xci)\]?$', re.I)
+ID_RE = re.compile(r'\s*\[[0-9A-Fa-f]{16}\]')
 
 
 def scan_game_dir(d):
@@ -106,7 +111,7 @@ def scan_game_dir(d):
     Nintendo's convention: the base game's title ID ends in 000, an update's in 800, and the DLC
     files carry [DLC] in the name (their IDs are the base's + 0x1000 and up)."""
     base, updates, dlc = None, [], []
-    files = sorted([p for p in d.iterdir() if p.suffix.lower() in ('.nsp', '.xci')]) if d.is_dir() else []
+    files = sorted([p for p in d.iterdir() if p.is_file() and EXT_RE.search(p.name)]) if d.is_dir() else []
     for f in files:
         m = TITLE_RE.search(f.name)
         tid = m.group(1).upper() if m else ''
@@ -119,6 +124,25 @@ def scan_game_dir(d):
         else:
             updates.append(f)
     return base, updates, dlc, files
+
+
+def file_info(f):
+    """What the interface shows for a file.
+
+    The title ID and the name are kept apart on purpose: the ID is 16 characters and always fits,
+    the name can be long. A folder can hold several updates and several DLC, so the interface needs
+    the ID of each one on its own line rather than one joined string."""
+    m = TITLE_RE.search(f.name)
+    # The name without the title ID in it (the ID is shown on its own), with the leftover spaces
+    # tidied up: "Some Game [0100…E800] [v1114112].nsp" -> "Some Game [v1114112].nsp".
+    label = re.sub(r'\s+', ' ', ID_RE.sub(' ', f.name)).strip()
+    label = re.sub(r'\s+(\.[A-Za-z0-9]+)$', r'\1', label)
+    return {
+        'path': str(f),
+        'name': f.name,
+        'label': label,
+        'title_id': m.group(1).upper() if m else '',
+    }
 
 
 def profile_for(repo, title_id):
@@ -201,9 +225,9 @@ def cmd_plan(args):
          repo=str(repo) if repo else '',
          repo_ok=bool(repo),
          keys=str(args.keys or ''), keys_ok=keys_ok,
-         base=str(base) if base else '', base_title_id=title_id,
-         updates=[str(u) for u in updates],
-         dlc=[str(d) for d in dlc],
+         base=file_info(base) if base else None, base_title_id=title_id,
+         updates=[file_info(u) for u in updates],
+         dlc=[file_info(u) for u in dlc],
          all_files=[str(f) for f in files],
          has_port=bool(prof),
          name=prof['name'] if prof else (base.stem if base else ''),

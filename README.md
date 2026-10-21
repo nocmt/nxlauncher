@@ -10,6 +10,7 @@ NSP/XCI, and it builds the IPA, runs the game, and exports what you want to hand
 | | |
 |---|---|
 | **Game data** | The folder with the base game (NSP **or** XCI), the update and the DLC. The app sorts them out, reads the icon and the name out of the game, and says whether the game has a port (a profile in `dm/games/`). |
+| **Several files** | A folder can hold more than one update and more than one DLC. The row shows how many, and opening it lists them one by one -- the title ID first, because it always fits, and then the name without it. Hover a line for the full path. |
 | **Host keys** | `prod.keys`. No firmware: the pipeline does not use one. |
 | **Settings** | Target frame rate (60 / 30), language (follow the system / 简体中文 / English), the export folder. They are written to the game's `env.txt`, so they take effect on the next start. |
 | **Start** | Compiles the game the first time (30–60 minutes, the shaders), then starts it. |

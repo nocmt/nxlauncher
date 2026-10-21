@@ -141,6 +141,12 @@ struct ContentView: View {
 
     // MARK: - the game folder
 
+    /// The base game, as a list (it is one file, but the row takes a list like the other groups).
+    private var baseFiles: [GameFile] {
+        guard let base = state.plan?.base else { return [] }
+        return [base]
+    }
+
     private var gameData: some View {
         Card(title: "游戏数据", systemImage: "folder") {
             HStack(spacing: 8) {
@@ -158,14 +164,14 @@ struct ContentView: View {
             }
 
             VStack(spacing: 0) {
-                DataRow(title: "游戏本体", detail: Plan.fileName(state.plan?.base ?? ""),
-                        state: (state.plan?.base ?? "").isEmpty ? .idle : .ok)
+                FileGroupRow(title: "游戏本体", files: baseFiles,
+                             state: baseFiles.isEmpty ? .idle : .ok)
                 Divider().padding(.leading, 12)
-                DataRow(title: "更新包", detail: (state.plan?.updates ?? []).map(Plan.fileName).joined(separator: ", "),
-                        state: (state.plan?.updates ?? []).isEmpty ? .idle : .ok)
+                FileGroupRow(title: "更新包", files: state.plan?.updates ?? [],
+                             state: (state.plan?.updates ?? []).isEmpty ? .idle : .ok)
                 Divider().padding(.leading, 12)
-                DataRow(title: "追加内容", detail: (state.plan?.dlc ?? []).map(Plan.fileName).joined(separator: ", "),
-                        state: (state.plan?.dlc ?? []).isEmpty ? .idle : .ok)
+                FileGroupRow(title: "追加内容", files: state.plan?.dlc ?? [],
+                             state: (state.plan?.dlc ?? []).isEmpty ? .idle : .ok)
                 Divider().padding(.leading, 12)
                 DataRow(title: "移植档案", detail: state.plan?.hasPort == true ? "已就绪 · \(state.plan?.version ?? "")" : "没有移植档案",
                         state: state.plan?.hasPort == true ? .ok : .warn)

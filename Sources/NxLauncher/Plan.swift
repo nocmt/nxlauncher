@@ -2,6 +2,26 @@
 // Tools/pack_pipeline.py's "plan" command.
 import Foundation
 
+/// One file in the game folder: the base game, an update, or a DLC.
+///
+/// The title ID and the name are kept apart on purpose: the ID is 16 characters and always fits on
+/// a line, the name can be long. A folder can hold several updates and several DLC, so they are
+/// listed one by one rather than as one joined string.
+struct GameFile: Decodable, Identifiable {
+    var path: String = ""
+    var name: String = ""
+    /// The name without the title ID in it (the ID is shown on its own).
+    var label: String = ""
+    var titleID: String = ""
+
+    var id: String { path }
+
+    enum CodingKeys: String, CodingKey {
+        case path, name, label
+        case titleID = "title_id"
+    }
+}
+
 struct Plan: Decodable {
     var ev: String = ""
     var ok: Bool = false
@@ -14,10 +34,10 @@ struct Plan: Decodable {
     var keys: String = ""
     var keysOK: Bool = false
 
-    var base: String = ""
+    var base: GameFile? = nil
     var baseTitleID: String = ""
-    var updates: [String] = []
-    var dlc: [String] = []
+    var updates: [GameFile] = []
+    var dlc: [GameFile] = []
     var allFiles: [String] = []
 
     var hasPort: Bool = false
@@ -43,10 +63,5 @@ struct Plan: Decodable {
         case built, icon
         case fpsTarget = "fps_target"
         case notes
-    }
-
-    /// The file name of a path, for the one-line rows of the list.
-    static func fileName(_ path: String) -> String {
-        path.isEmpty ? "" : (path as NSString).lastPathComponent
     }
 }
