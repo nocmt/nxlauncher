@@ -60,9 +60,12 @@ done
 PROF=$REPO/dm/games/$GAME
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
-# A Python with PIL (the .icns is written by hand, because sips cannot write to the sandboxed TMPDIR)
+# A Python with PIL (the .icns is written by hand, because sips cannot write to the sandboxed TMPDIR).
+# NXLAUNCHER_PYTHON is the launcher's own Python (the app carries one); its packages are on the
+# PYTHONPATH, so the check below sees the Pillow there.
 if [ -z "$PY" ]; then
-  for c in /Users/guxiu/Library/miniforge3/bin/python3 python3 /opt/homebrew/bin/python3; do
+  for c in "${NXLAUNCHER_PYTHON:-}" /Users/guxiu/Library/miniforge3/bin/python3 python3 /opt/homebrew/bin/python3; do
+    [ -n "$c" ] || continue
     if [ -x "$c" ] && "$c" -c "import PIL" >/dev/null 2>&1; then PY="$c"; break; fi
   done
 fi
@@ -129,8 +132,23 @@ cp -cR "$WORK/extract/$VER/RomFS" "$RES/romfs"
 echo "    $(find "$RES/romfs" -type f | wc -l | tr -d ' ') files"
 
 # --- the shared-font stand-ins ---
+# They are made when the iOS app is built (build_ipa.sh): the standard font is the system's Arial
+# Unicode, the extended one the upstream's script makes. A Mac-only export has no iOS build, so
+# they are made here when they are missing.
 echo "[6] the fonts ..."
 FONT_DIR="$REPO/dm/ios/Gen/dm/font"
+if [ ! -f "$FONT_DIR/standard.ttf" ] || [ ! -f "$FONT_DIR/nintendo_ext.ttf" ]; then
+    echo "    (making them)"
+    mkdir -p "$FONT_DIR" 2>/dev/null || true
+    if [ ! -f "$FONT_DIR/standard.ttf" ]; then
+        cp "${STD_FONT:-/System/Library/Fonts/Supplemental/Arial Unicode.ttf}" "$FONT_DIR/standard.ttf" 2>/dev/null \
+            || echo "    (no standard font: the system's Arial Unicode)"
+    fi
+    if [ ! -f "$FONT_DIR/nintendo_ext.ttf" ]; then
+        "$PY" "$REPO/dm/tools/make_ext_font.py" "$FONT_DIR/nintendo_ext.ttf" >/dev/null 2>&1 \
+            || echo "    (the extended font could not be made: it needs fontTools)"
+    fi
+fi
 if [ -f "$FONT_DIR/standard.ttf" ] && [ -f "$FONT_DIR/nintendo_ext.ttf" ]; then
   cp "$FONT_DIR/standard.ttf" "$FONT_DIR/nintendo_ext.ttf" "$RES/font/"
 else

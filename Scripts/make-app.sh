@@ -26,6 +26,12 @@ mkdir -p "$OUT/Contents/MacOS" "$OUT/Contents/Resources"
 cp "$BIN" "$OUT/Contents/MacOS/NxLauncher"
 cp "$ICON" "$OUT/Contents/Resources/AppIcon.icns"
 
+# The app carries its own tools: the pipeline, the upstream source tree and a standalone Python,
+# in one archive. The app unpacks it into the cache on the first run, so the app can be shared as
+# a single file and needs nothing else from this repository.
+bash "$HERE/Scripts/make-home-archive.sh" "$OUT/Contents/Resources/nxlauncher-home.tgz" \
+    || { echo "FAIL: the archive"; exit 1; }
+
 cat > "$OUT/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

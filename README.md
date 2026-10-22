@@ -12,9 +12,9 @@ NSP/XCI, and it builds the IPA, runs the game, and exports what you want to hand
 | **Game data** | The folder with the base game (NSP **or** XCI), the update and the DLC. The app sorts them out, reads the icon and the name out of the game, and says whether the game has a port (a profile in `dm/games/`). |
 | **Several files** | A folder can hold more than one update and more than one DLC. The row shows how many, and opening it lists them one by one -- the title ID first, because it always fits, and then the name without it. Hover a line for the full path. |
 | **Host keys** | `prod.keys`. No firmware: the pipeline does not use one. |
-| **Settings** | Target frame rate (60 / 30), language (follow the system / 简体中文 / English), the export folder. They are written to the game's `env.txt`, so they take effect on the next start. |
+| **Settings** | The appearance (follow the system / light / dark), the target frame rate (60 / 30), the operation mode (handheld 720p / console 1080p). They are written to the game's `env.txt`, so they take effect on the next start. |
 | **Start** | Compiles the game the first time (30–60 minutes, the shaders), then starts it. |
-| **Export** | The Mac `.app` and the iOS IPA, into the folder you chose. |
+| **Export** | The Mac `.app` and the iOS IPA. Each export asks where to put it: the export is written from the work folder, so it is a new copy every time. |
 
 ## Install
 
@@ -35,6 +35,29 @@ swift run NxLauncher                      # the app
 swift run NxLauncher --game-dir ~/Games/BotW --keys ~/keys/prod.keys
 bash Scripts/make-app.sh                  # a double-clickable NxLauncher.app in dist/
 ```
+
+## The app carries its own tools
+
+`Scripts/make-app.sh` puts everything the app needs into the bundle, in **one archive**
+(`Contents/Resources/nxlauncher-home.tgz`, about 50 MB): the pipeline, the upstream source tree, a
+standalone Python 3.13 and the wheels for `lz4` / `capstone` / `fontTools` / `Pillow`.
+
+So the `.app` can be handed to someone as a single file: it needs no repository, no Python and no
+`pip` on that machine. On the first run it unpacks the archive into
+`~/Library/Caches/NxLauncher/home` (not into the bundle: the bundle can be read-only, and the build
+writes into the tree) and installs the Python's packages from the wheels, offline.
+
+What the app still needs from the machine it runs on:
+
+| | |
+|---|---|
+| **Playing** | nothing -- the exported `.app` is all a player needs |
+| **Exporting a Mac .app** | Xcode's command line tools (the host is compiled) |
+| **Building the IPA** | the whole toolchain: Xcode, `xcodegen`, `.NET SDK 10`, `spirv-cross`, `zstd` |
+| **The game** | the NSP/XCI, the DLC and the keys -- the files themselves, of course |
+
+The archive is rebuilt by `Scripts/make-home-archive.sh` (it needs a standalone Python 3.13; `uv`
+keeps one in its cache).
 
 ## The pipeline from the command line
 
@@ -67,8 +90,12 @@ NxLauncher/
 ├── patches/                   our changes to the upstream tree (see below)
 ├── nxnative/                  the upstream tree, a submodule
 ├── bootstrap.sh               the submodule + the patches + the toolchain check
-├── Resources/AppIcon.icns     the launcher's icon (the Switch logo)
-└── Scripts/make-app.sh        the launcher as a macOS .app
+├── Resources/
+│   ├── AppIcon.icns           the launcher's icon (the Switch logo)
+│   └── wheels/                the Python packages, for the offline install in the app
+└── Scripts/
+    ├── make-app.sh            the launcher as a macOS .app
+    └── make-home-archive.sh   the archive the app carries (the tools + the tree + the Python)
 ```
 
 ### The patches

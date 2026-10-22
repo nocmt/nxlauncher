@@ -98,8 +98,8 @@ final class LauncherState: ObservableObject {
         rawValue: UserDefaults.standard.string(forKey: "appearance") ?? "") ?? .system
 
     // --- where the tools are ---
-    /// The repository root (the one with Tools/pack_pipeline.py): the environment, the app bundle's
-    /// resources, or the source tree this binary was built from.
+    /// The folder the pipeline runs in: the repository (when the launcher runs from the sources),
+    /// or the copy the app unpacked from the archive it carries.
     let home: URL
 
     init() {
@@ -129,15 +129,21 @@ final class LauncherState: ObservableObject {
         if let e = ProcessInfo.processInfo.environment["NXLAUNCHER_HOME"], fm.fileExists(atPath: e) {
             return URL(fileURLWithPath: e)
         }
-        // the .app bundle: Contents/Resources/nxlauncher-home.txt says where the repository is
-        let exe = URL(fileURLWithPath: CommandLine.arguments.first ?? "").deletingLastPathComponent()
-        let resources = exe.deletingLastPathComponent().appendingPathComponent("Resources")
+        // the .app bundle: Contents/Resources/nxlauncher-home.txt says where the repository is.
+        // It is only there when the app was built here; on another machine the path does not
+        // exist and the app falls back to the archive it carries.
+        let resources = bundleResources()
         let pointer = resources.appendingPathComponent("nxlauncher-home.txt")
         if let text = try? String(contentsOf: pointer, encoding: .utf8) {
             let dir = URL(fileURLWithPath: text.trimmingCharacters(in: .whitespacesAndNewlines))
             if fm.fileExists(atPath: dir.appendingPathComponent("Tools/pack_pipeline.py").path) { return dir }
         }
+        // the shared app: it carries the archive, which is unpacked into the cache
+        if bundledArchive() != nil {
+            return cacheDir.appendingPathComponent("home")
+        }
         // the source tree this binary was built from
+        let exe = URL(fileURLWithPath: CommandLine.arguments.first ?? "").deletingLastPathComponent()
         for dir in [exe, exe.deletingLastPathComponent(), exe.deletingLastPathComponent().deletingLastPathComponent()] {
             if fm.fileExists(atPath: dir.appendingPathComponent("Tools/pack_pipeline.py").path) { return dir }
         }
@@ -145,7 +151,127 @@ final class LauncherState: ObservableObject {
     }
 
     var toolsDir: URL { home.appendingPathComponent("Tools") }
-    var pipeline: Pipeline { Pipeline(toolsDir: toolsDir) }
+
+    /// The environment the pipeline runs in: the tree it works in, and the Python it runs under.
+    private var pipelineEnv: [String: String] {
+        var e: [String: String] = [:]
+        let fm = FileManager.default
+        // the Python's packages (lz4, capstone, fontTools, Pillow), installed next to it
+        let libs = home.appendingPathComponent("py-libs")
+        if fm.fileExists(atPath: libs.path) { e["PYTHONPATH"] = libs.path }
+        // the upstream tree (the build writes into it)
+        let repo = home.appendingPathComponent("nxnative")
+        if fm.fileExists(atPath: repo.path) { e["NXLAUNCHER_REPO"] = repo.path }
+        if let python = bundledPython { e["NXLAUNCHER_PYTHON"] = python }
+        return e
+    }
+
+    /// The Python the app carries, if it carries one (the shared app does; the sources do not).
+    var bundledPython: String? {
+        let p = home.appendingPathComponent("python/bin/python3")
+        return FileManager.default.fileExists(atPath: p.path) ? p.path : nil
+    }
+
+    var pipeline: Pipeline { Pipeline(toolsDir: toolsDir, python: bundledPython, env: pipelineEnv) }
+
+    // MARK: - the archive the app carries
+
+    /// The archive in the app bundle: the tools, the upstream tree, the Python wheels and a
+    /// standalone Python, in one file. It is what makes the app shareable as a single file.
+    static func bundledArchive() -> URL? {
+        let resources = LauncherState.bundleResources()
+        let archive = resources.appendingPathComponent("nxlauncher-home.tgz")
+        return FileManager.default.fileExists(atPath: archive.path) ? archive : nil
+    }
+
+    /// The bundle's Resources folder (the launcher runs from inside an .app).
+    static func bundleResources() -> URL {
+        let exe = URL(fileURLWithPath: CommandLine.arguments.first ?? "").deletingLastPathComponent()
+        return exe.deletingLastPathComponent().appendingPathComponent("Resources")
+    }
+
+    /// The cache folder: the app unpacks its archive here. Not in the bundle: the bundle can be
+    /// read-only (in /Applications) and the build writes into the tree.
+    static var cacheDir: URL {
+        URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Caches/NxLauncher")
+    }
+
+    /// Unpack the archive and get the Python ready. It happens once: the stamp says whether the
+    /// cache is already the archive's contents. It moves about 130 MB, so it runs off the main
+    /// thread.
+    static func unpackHome() throws {
+        guard let archive = bundledArchive() else { return }   // the sources: nothing to unpack
+        let fm = FileManager.default
+        let home = cacheDir.appendingPathComponent("home")
+        let stampFile = home.appendingPathComponent(".stamp")
+        let want = "\(archive.lastPathComponent)|\(fileStamp(of: archive))"
+        let have = (try? String(contentsOf: stampFile, encoding: .utf8)) ?? ""
+        if have != want {
+            try? fm.removeItem(at: home)
+            try fm.createDirectory(at: home, withIntermediateDirectories: true)
+            try run("/usr/bin/tar", ["-xzf", archive.path, "-C", home.path])
+            try want.write(to: stampFile, atomically: true, encoding: .utf8)
+        }
+        // the Python's packages, from the wheels in the archive (no network)
+        let libs = home.appendingPathComponent("py-libs")
+        let python = home.appendingPathComponent("python/bin/python3")
+        if fm.fileExists(atPath: python.path),
+           !fm.fileExists(atPath: libs.appendingPathComponent("lz4").path) {
+            try? fm.createDirectory(at: libs, withIntermediateDirectories: true)
+            try run(python.path, ["-m", "pip", "install", "--quiet", "--no-index",
+                                  "--find-links", home.appendingPathComponent("wheels").path,
+                                  "--target", libs.path, "lz4", "capstone", "fonttools", "pillow"])
+        }
+    }
+
+    /// Unpack the app's archive (if it has one) and then run the closure. The window says what it
+    /// is doing meanwhile.
+    func prepare(_ done: @escaping () -> Void) {
+        guard LauncherState.bundledArchive() != nil, !prepared else { done(); return }
+        statusText = "准备中（解包工具）"
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var failure = ""
+            do { try LauncherState.unpackHome() } catch { failure = error.localizedDescription }
+            DispatchQueue.main.async {
+                if !failure.isEmpty { self?.notify("准备失败：\(failure)", isError: true) }
+                self?.prepared = true
+                done()
+            }
+        }
+    }
+
+    /// Whether the archive has already been unpacked.
+    private var prepared = false
+
+    /// A short description of a file, to tell one copy of the archive from another.
+    private static func fileStamp(of url: URL) -> String {
+        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        return "\(values?.fileSize ?? 0)-\(values?.contentModificationDate?.timeIntervalSince1970 ?? 0)"
+    }
+
+    /// Runs a tool and waits for it; it throws when the tool fails.
+    @discardableResult
+    static func run(_ tool: String, _ args: [String]) throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: tool)
+        process.arguments = args
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do { try process.run() } catch {
+            throw error
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let text = String(data: data, encoding: .utf8) ?? ""
+        if process.terminationStatus != 0 {
+            throw NSError(domain: "NxLauncher", code: Int(process.terminationStatus), userInfo: [
+                NSLocalizedDescriptionKey: "\(URL(fileURLWithPath: tool).lastPathComponent) failed: \(text)"
+            ])
+        }
+        return text
+    }
 
     // --- the plan ---
 
@@ -260,7 +386,10 @@ final class LauncherState: ObservableObject {
 
     func exportMacApp() {
         guard let plan, plan.built else { notify("还没有编译，先编译一次", isError: true); return }
-        let out = URL(fileURLWithPath: exportDir).appendingPathComponent("\(supportName).app").path
+        // the export is written from the work folder, so it is a new copy every time: ask where
+        // it should go instead of keeping a directory in the settings
+        guard let dir = askWhereToExport("把 .app 导出到这个文件夹") else { return }
+        let out = URL(fileURLWithPath: dir).appendingPathComponent("\(supportName).app").path
         let extra = ["--game", plan.baseTitleID, "--ver", plan.version,
                      "--work", plan.workDir, "--name", supportName,
                      "--display", plan.name,
@@ -270,8 +399,24 @@ final class LauncherState: ObservableObject {
 
     func exportUnsignedIPA() {
         guard let plan, plan.built else { statusText = "还没有编译，先编译一次"; return }
-        let out = URL(fileURLWithPath: exportDir).appendingPathComponent("\(plan.name).ipa").path
+        guard let dir = askWhereToExport("把 IPA 导出到这个文件夹") else { return }
+        let out = URL(fileURLWithPath: dir).appendingPathComponent("\(plan.name).ipa").path
         runExport(target: "ios-ipa-unsigned", out: out, extra: ["--work", plan.workDir])
+    }
+
+    /// Ask where to put the export (a folder chooser; the last one is the starting point).
+    private func askWhereToExport(_ message: String) -> String? {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = "导出到这里"
+        panel.message = message
+        panel.directoryURL = URL(fileURLWithPath: exportDir)
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        exportDir = url.path
+        return url.path
     }
 
     private func runExport(target: String, out: String, extra: [String]) {

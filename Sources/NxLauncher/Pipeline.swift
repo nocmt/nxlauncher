@@ -75,11 +75,15 @@ final class Pipeline: @unchecked Sendable {
     enum Failure: Error { case cannotRun(String), exited(Int) }
 
     private let toolsDir: URL
-    private let python: String
+    /// The interpreter to run the script with; nil = the system's python3.
+    private let python: String?
+    /// Extra environment for the script (the bundled tree, the bundled Python's packages).
+    private let env: [String: String]
 
-    init(toolsDir: URL, python: String = "/usr/bin/env") {
+    init(toolsDir: URL, python: String? = nil, env: [String: String] = [:]) {
         self.toolsDir = toolsDir
         self.python = python
+        self.env = env
     }
 
     /// The script's path.
@@ -88,12 +92,18 @@ final class Pipeline: @unchecked Sendable {
     /// Run it with the given arguments; `onEvent` is called for every line, on a background queue.
     func run(_ args: [String], onEvent: @escaping (PipelineEvent) -> Void) throws {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["python3", scriptURL.path] + args
+        if let python {
+            process.executableURL = URL(fileURLWithPath: python)
+            process.arguments = [scriptURL.path] + args
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["python3", scriptURL.path] + args
+        }
         process.currentDirectoryURL = toolsDir
-        var env = ProcessInfo.processInfo.environment
-        env["PYTHONUNBUFFERED"] = "1"
-        process.environment = env
+        var environment = ProcessInfo.processInfo.environment
+        environment["PYTHONUNBUFFERED"] = "1"
+        for (k, v) in env { environment[k] = v }
+        process.environment = environment
 
         let pipe = Pipe()
         process.standardOutput = pipe

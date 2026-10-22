@@ -31,9 +31,12 @@ struct ContentView: View {
                     .background(.bar)
             }
             .onAppear {
-                state.loadGames()
                 state.loadEnv()          // what is really in effect, from env.txt
-                if !state.gameDir.isEmpty { state.refreshPlan() }
+                // the app carries its own tools (in an archive): unpack them before anything runs
+                state.prepare {
+                    state.loadGames()
+                    if !state.gameDir.isEmpty { state.refreshPlan() }
+                }
             }
 
             // The toast: a message that floats over the window and disappears by itself. It sits in
@@ -272,25 +275,6 @@ struct ContentView: View {
                     .padding(.horizontal, 12)
                     .padding(.bottom, 9)
                 Divider().padding(.leading, 12)
-                settingRow("导出目录") {
-                    Text(state.exportDir)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer(minLength: 8)
-                    Button("选择…") { pickExportDir() }.buttonStyle(QuietButtonStyle())
-                }
-                Divider().padding(.leading, 12)
-                settingRow("工具目录") {
-                    Text(state.home.path)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer(minLength: 8)
-                    Button("重新读取") { state.refreshPlan() }.buttonStyle(QuietButtonStyle())
-                }
             }
             .background(DS.row, in: RoundedRectangle(cornerRadius: DS.small, style: .continuous))
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -339,13 +323,13 @@ struct ContentView: View {
             .disabled(state.busy)
 
             Button { state.exportMacApp() } label: {
-                Label("导出 .app", systemImage: "app.dashed")
+                Label("导出 .app…", systemImage: "app.dashed")
             }
             .buttonStyle(SecondaryButtonStyle())
             .disabled(state.busy || state.plan?.built != true)
 
             Button { state.exportUnsignedIPA() } label: {
-                Label("导出 IPA", systemImage: "square.and.arrow.down")
+                Label("导出 IPA…", systemImage: "square.and.arrow.down")
             }
             .buttonStyle(SecondaryButtonStyle())
             .disabled(state.busy || state.plan?.built != true)
