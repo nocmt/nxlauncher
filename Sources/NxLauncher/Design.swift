@@ -2,6 +2,7 @@
 //
 // Everything is built from the semantic colors, so the window follows the system's light / dark
 // appearance without a second set of values.
+import AppKit
 import SwiftUI
 
 enum DS {
@@ -19,6 +20,49 @@ enum DS {
     static var idle: Color { Color(nsColor: .tertiaryLabelColor) }
     static var warn: Color { Color(nsColor: .systemOrange) }
     static var bad: Color { Color(nsColor: .systemRed) }
+
+    // MARK: - the colours of the window
+
+    /// A colour that follows the appearance: the same colour, another value in the light and in the
+    /// dark. The system is asked for the value when it draws, so no view has to know which
+    /// appearance is on -- and the window's own appearance setting (light / dark / follow the
+    /// system) works exactly like the system's.
+    static func dynamic(_ light: NSColor, _ dark: NSColor) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
+        })
+    }
+
+    /// The ground of the window. In the light mode it is almost white with a cold hint of grey, so
+    /// the white cards on it read clean instead of grey on grey.
+    static let windowTop = dynamic(NSColor(srgbRed: 0.988, green: 0.990, blue: 0.996, alpha: 1),
+                                   NSColor(srgbRed: 0.125, green: 0.125, blue: 0.140, alpha: 1))
+    static let windowBottom = dynamic(NSColor(srgbRed: 0.949, green: 0.953, blue: 0.969, alpha: 1),
+                                      NSColor(srgbRed: 0.086, green: 0.086, blue: 0.098, alpha: 1))
+
+    /// The cards: white on the light ground, a little lighter than the ground in the dark (a card
+    /// that is darker than its ground looks hollow).
+    static let card = dynamic(.white, NSColor(srgbRed: 0.153, green: 0.153, blue: 0.173, alpha: 1))
+    static let cardStroke = dynamic(NSColor.black.withAlphaComponent(0.07),
+                                    NSColor.white.withAlphaComponent(0.09))
+    static let cardShadow = dynamic(NSColor.black.withAlphaComponent(0.05),
+                                    NSColor.black.withAlphaComponent(0.42))
+    /// The shadow of something that floats over the window (the toast): it needs more than the
+    /// cards' shadow to read as a separate layer on the light ground.
+    static let floatShadow = dynamic(NSColor.black.withAlphaComponent(0.16),
+                                     NSColor.black.withAlphaComponent(0.55))
+
+    /// A group of rows inside a card. In the light mode there is no block at all: the rows are
+    /// separated by a hairline, and that is what makes the light mode clean. In the dark mode the
+    /// block is a little lighter than the card, so the rows read as one group.
+    static let row = dynamic(NSColor.white.withAlphaComponent(0),
+                              NSColor(srgbRed: 0.204, green: 0.204, blue: 0.227, alpha: 1))
+    /// The hairline between the rows.
+    static let hairline = dynamic(NSColor.black.withAlphaComponent(0.08),
+                                   NSColor.white.withAlphaComponent(0.09))
+    /// The small quiet buttons and the empty track of the progress bar.
+    static let quiet = dynamic(NSColor(srgbRed: 0.925, green: 0.929, blue: 0.945, alpha: 1),
+                               NSColor(srgbRed: 0.259, green: 0.259, blue: 0.286, alpha: 1))
 }
 
 // MARK: - the card
@@ -37,13 +81,13 @@ struct Card<Content: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: DS.radius, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
+                .fill(DS.card)
         )
         .overlay(
             RoundedRectangle(cornerRadius: DS.radius, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
+                .strokeBorder(DS.cardStroke, lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.10), radius: 10, x: 0, y: 3)
+        .shadow(color: DS.cardShadow, radius: 10, x: 0, y: 3)
     }
 }
 
@@ -101,11 +145,11 @@ struct SecondaryButtonStyle: ButtonStyle {
             .padding(.vertical, 8)
             .background(
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(DS.tint(DS.accent).opacity(configuration.isPressed ? 0.9 : 1))
+                    .fill(DS.accent.opacity(configuration.isPressed ? 0.20 : 0.11))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .strokeBorder(DS.accent.opacity(0.28), lineWidth: 1)
+                    .strokeBorder(DS.accent.opacity(0.22), lineWidth: 1)
             )
             .opacity(configuration.isPressed ? 0.75 : 1)
     }
@@ -121,7 +165,7 @@ struct QuietButtonStyle: ButtonStyle {
             .padding(.vertical, 6)
             .background(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.primary.opacity(configuration.isPressed ? 0.14 : 0.07))
+                    .fill(configuration.isPressed ? DS.hairline : DS.quiet)
             )
     }
 }
@@ -141,7 +185,7 @@ struct Bar: View {
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.primary.opacity(0.08))
+                Capsule().fill(DS.quiet)
                 if let f = fraction, f >= 0 {
                     Capsule()
                         .fill(LinearGradient(colors: [DS.accent, DS.accent.opacity(0.75)],
@@ -191,13 +235,13 @@ struct Toast: View {
         .frame(maxWidth: 480, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.97))
+                .fill(DS.card)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.09), lineWidth: 1)
+                .strokeBorder(DS.cardStroke, lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.20), radius: 16, x: 0, y: 6)
+        .shadow(color: DS.floatShadow, radius: 16, x: 0, y: 6)
     }
 }
 

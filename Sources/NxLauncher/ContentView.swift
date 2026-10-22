@@ -21,8 +21,7 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity)
                 }
                 .background(
-                    LinearGradient(colors: [Color(nsColor: .windowBackgroundColor),
-                                            Color(nsColor: .underPageBackgroundColor).opacity(0.35)],
+                    LinearGradient(colors: [DS.windowTop, DS.windowBottom],
                                    startPoint: .top, endPoint: .bottom)
                 )
                 Divider()
@@ -49,6 +48,7 @@ struct ContentView: View {
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
+        .preferredColorScheme(state.appearance.colorScheme)
         .animation(.easeOut(duration: 0.22), value: state.toast)
     }
 
@@ -79,10 +79,10 @@ struct ContentView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: DS.small, style: .continuous))
+        .background(DS.row, in: RoundedRectangle(cornerRadius: DS.small, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: DS.small, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+                .strokeBorder(DS.hairline, lineWidth: 1)
         )
         .overlay(alignment: .bottom) {
             // nil = idle (an empty groove), a negative number = the count is unknown (a moving stripe).
@@ -214,7 +214,7 @@ struct ContentView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
             }
-            .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: DS.small, style: .continuous))
+            .background(DS.row, in: RoundedRectangle(cornerRadius: DS.small, style: .continuous))
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if let notes = state.plan?.notes, !notes.isEmpty {
@@ -236,6 +236,15 @@ struct ContentView: View {
     private var settings: some View {
         Card(title: "设置", systemImage: "slider.horizontal.3") {
             VStack(spacing: 0) {
+                settingRow("外观") {
+                    Picker("", selection: $state.appearance) {
+                        ForEach(LauncherState.Appearance.allCases) { a in Text(a.rawValue).tag(a) }
+                    }
+                    .labelsHidden()
+                    .frame(width: 160)
+                    .onChange(of: state.appearance) { _, _ in state.appearanceChanged() }
+                }
+                Divider().padding(.leading, 12)
                 settingRow("目标帧率") {
                     Picker("", selection: $state.targetFPS) {
                         Text("60 帧").tag(60)
@@ -283,7 +292,7 @@ struct ContentView: View {
                     Button("重新读取") { state.refreshPlan() }.buttonStyle(QuietButtonStyle())
                 }
             }
-            .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: DS.small, style: .continuous))
+            .background(DS.row, in: RoundedRectangle(cornerRadius: DS.small, style: .continuous))
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -373,7 +382,7 @@ struct ContentView: View {
                 .padding(8)
             }
             .frame(minHeight: 64, maxHeight: 140)
-            .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: DS.small, style: .continuous))
+            .background(DS.row, in: RoundedRectangle(cornerRadius: DS.small, style: .continuous))
         }
     }
 

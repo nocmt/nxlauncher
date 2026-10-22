@@ -78,6 +78,25 @@ final class LauncherState: ObservableObject {
         }
     }
 
+    /// How the window looks: the system's, or always light, or always dark. The colours are
+    /// dynamic (they are asked for when they are drawn), so this is all it takes.
+    enum Appearance: String, CaseIterable, Identifiable {
+        case system = "跟随系统"
+        case light = "浅色"
+        case dark = "深色"
+        var id: String { rawValue }
+        /// nil = follow the system.
+        var colorScheme: ColorScheme? {
+            switch self {
+            case .system: return nil
+            case .light: return .light
+            case .dark: return .dark
+            }
+        }
+    }
+    @Published var appearance: Appearance = Appearance(
+        rawValue: UserDefaults.standard.string(forKey: "appearance") ?? "") ?? .system
+
     // --- where the tools are ---
     /// The repository root (the one with Tools/pack_pipeline.py): the environment, the app bundle's
     /// resources, or the source tree this binary was built from.
@@ -199,6 +218,11 @@ final class LauncherState: ObservableObject {
         notice = message
         noticeIsError = isError
         appendLog(isError ? "✗ " + message : message)
+    }
+
+    /// The appearance was changed in the window: remember it for the next time.
+    func appearanceChanged() {
+        UserDefaults.standard.set(appearance.rawValue, forKey: "appearance")
     }
 
     // --- the runs ---
