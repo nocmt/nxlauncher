@@ -6,9 +6,14 @@ dist/
 # the game data never belongs in the repository
 *.nsp
 *.xci
+*.nsz
 *.sav
 prod.keys
 keys/
+
+# the games themselves (the source files, the work folders with the shader cache, the keys)
+game/
+*_build/
 
 # the upstream tree's build products (the submodule is a separate repository)
 nxnative/dm/host/dmhost
