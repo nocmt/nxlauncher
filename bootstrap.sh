@@ -5,9 +5,8 @@
 #   ./bootstrap.sh            prepare everything and report what is missing
 #   ./bootstrap.sh --check    only report (does not change anything)
 #
-# The submodule is pinned to the commit our patch was made against (bc5815a). Upstream moves on; when
-# it is bumped the patch has to be rebased (git -C nxnative am / git am the patch) and the build
-# re-verified -- the patch touches the host's frame pacing, the input layer and the progress view.
+# The upstream commit and ordered patch series are recorded in patches/. Preparation checks the
+# complete resulting tree; an upstream bump requires rebasing and verifying that series.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 CHECK=0
@@ -21,22 +20,18 @@ need() {   # need <command> <how to get it>
 
 say "=== the nxnative dependency ==="
 if [ ! -d "$HERE/nxnative/.git" ] && [ ! -f "$HERE/nxnative/.git" ]; then
-  say "  cloning the submodule ..."
-  git -C "$HERE" submodule update --init --recursive || { say "  ✗ the submodule could not be fetched"; miss=1; }
+  if [ $CHECK -eq 0 ]; then
+    say "  cloning the submodule ..."
+    git -C "$HERE" submodule update --init --recursive || { say "  ✗ the submodule could not be fetched"; miss=1; }
+  else
+    say "  ✗ the submodule is not initialized (run ./bootstrap.sh)"; miss=1
+  fi
 fi
 if [ -d "$HERE/nxnative/dm/host" ]; then
-  say "  ✓ nxnative is at $(git -C "$HERE/nxnative" rev-parse --short HEAD)"
-  if git -C "$HERE/nxnative" diff --quiet && [ ! -f "$HERE/nxnative/dm/host/front_gamepad_mac.m" ]; then
-    if [ $CHECK -eq 0 ]; then
-      say "  applying our patches ..."
-      for p in "$HERE"/patches/*.patch; do
-        git -C "$HERE/nxnative" apply "$p" && say "    ✓ $(basename "$p")" || { say "    ✗ $(basename "$p") did not apply"; miss=1; }
-      done
-    else
-      say "  · the patches are not applied yet (run ./bootstrap.sh)"
-    fi
+  if [ $CHECK -eq 1 ]; then
+    python3 "$HERE/Tools/prepare-nxnative.py" --check || miss=1
   else
-    say "  ✓ our patches are applied"
+    python3 "$HERE/Tools/prepare-nxnative.py" || exit 1
   fi
 else
   say "  ✗ nxnative is missing"; miss=1

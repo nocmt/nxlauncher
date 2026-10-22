@@ -1,0 +1,239 @@
+From a129b22de94d534394ba024f4ede644d16f40299 Mon Sep 17 00:00:00 2001
+From: nocmt <nocmtone@gmail.com>
+Date: Thu, 22 Oct 2026 12:00:09 +0800
+Subject: [PATCH 3/6] Share legacy controller glyph mapping through upstream
+ GameController bridges
+
+Recover the tracked helper from 7463eba (inherited from bc5815a), absent from the exported legacy patch. Keep vendor auto-detection and DM_PADMAP=nintendo|xbox, including a working explicit Xbox override. Keep the existing Mac/iOS controller publishing and disconnect paths; do not revive front_gamepad_mac.m. Test vendor detection, overrides and every face-button combination.
+---
+ dm/host/Makefile           |  2 +-
+ dm/host/dm_padmap.h        | 32 +++++++++++++++++++++++++++++++
+ dm/host/front_mac.m        | 14 +++++++++-----
+ dm/host/tests/Makefile     |  5 ++++-
+ dm/host/tests/t_padmap.c   | 21 ++++++++++++++++++++
+ dm/ios/Sources/DmGamepad.m | 39 ++++++++++++++++++++++++++++----------
+ 6 files changed, 96 insertions(+), 17 deletions(-)
+ create mode 100644 dm/host/dm_padmap.h
+ create mode 100644 dm/host/tests/t_padmap.c
+
+diff --git a/dm/host/Makefile b/dm/host/Makefile
+index a50df6c..68c4510 100644
+--- a/dm/host/Makefile
++++ b/dm/host/Makefile
+@@ -50,7 +50,7 @@ endif
+ endif
+ .PHONY: FORCE
+ FORCE:
+-dmhost: $(SRC) $(GFX) dm.h hle.h dm_input.h front.h $(GFX_H) $(GAME_H) $(GAME_DIR)/dmsh_chain.h $(GAME_STAMP) $(VPX_LIB)
++dmhost: $(SRC) $(GFX) dm.h hle.h dm_input.h dm_padmap.h front.h $(GFX_H) $(GAME_H) $(GAME_DIR)/dmsh_chain.h $(GAME_STAMP) $(VPX_LIB)
+ 	clang $(CFLAGS) -I../gfx/nvn/include -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(GAME_DIR) -I$(VPX) -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) -framework Cocoa -framework QuartzCore -framework Metal -framework GameController -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
+ clean:   # the host and everything make generates for it (gen/: the profile headers, the game stamp and the libvpx build; dmhost_* and *.dSYM beside them, as in .gitignore)
+ 	rm -rf gen dmhost dmhost_* *.dSYM
+diff --git a/dm/host/dm_padmap.h b/dm/host/dm_padmap.h
+new file mode 100644
+index 0000000..465bfb0
+--- /dev/null
++++ b/dm/host/dm_padmap.h
+@@ -0,0 +1,32 @@
++// Shared physical-controller face mapping. GameController names buttons by position:
++// A south, B east, X west, Y north. Preserve the legacy fork's glyph mapping:
++// Nintendo keeps Switch positions; Xbox, PlayStation and unknown pads use Xbox positions.
++// Detection comes from 7463eba:dm/host/dm_padmap.h (already tracked in its parent).
++#pragma once
++#include <stdint.h>
++#include <string.h>
++#include <strings.h>
++#include "dm_input.h"
++enum { DM_PADKIND_XBOX = 0, DM_PADKIND_NINTENDO = 1 };
++static inline int dm_padmap_has(const char *s, const char *word) {
++    size_t n = strlen(word);
++    for (; s && *s; s++) if (!strncasecmp(s, word, n)) return 1;
++    return 0;
++}
++static inline int dm_padmap_kind(const char *category, const char *vendor) {
++    static const char *const words[] = {"switch", "nintendo", "joy-con"};
++    for (unsigned i = 0; i < sizeof words / sizeof *words; i++)
++        if (dm_padmap_has(category, words[i]) || dm_padmap_has(vendor, words[i])) return DM_PADKIND_NINTENDO;
++    return DM_PADKIND_XBOX;
++}
++// An explicit Xbox override must not share a sentinel with automatic detection (Xbox is 0).
++static inline int dm_padmap_select(const char *override, const char *category, const char *vendor) {
++    if (override && !strcasecmp(override, "nintendo")) return DM_PADKIND_NINTENDO;
++    if (override && !strcasecmp(override, "xbox")) return DM_PADKIND_XBOX;
++    return dm_padmap_kind(category, vendor);
++}
++static inline uint64_t dm_padmap_face(int kind, int south, int east, int west, int north) {
++    if (kind == DM_PADKIND_NINTENDO)
++        return (east ? DM_BTN_A : 0) | (south ? DM_BTN_B : 0) | (north ? DM_BTN_X : 0) | (west ? DM_BTN_Y : 0);
++    return (south ? DM_BTN_A : 0) | (east ? DM_BTN_B : 0) | (west ? DM_BTN_X : 0) | (north ? DM_BTN_Y : 0);
++}
+diff --git a/dm/host/front_mac.m b/dm/host/front_mac.m
+index afa480b..a7cf45b 100644
+--- a/dm/host/front_mac.m
++++ b/dm/host/front_mac.m
+@@ -4,7 +4,7 @@
+ // Key map (Nintendo layout): WASD left stick, arrow keys D-pad, J=A K=B U=X I=Y, Q=L E=R, Z=ZL C=ZR, F=press left stick G=press right stick, Return=+ Tab=−, Space=shake the controller.
+ // Mouse: left button touches the screen; DM_MOUSE_PAD=1 maps it to A. Right drag or unpressed movement drives the right stick.
+ // DM_WINDOW_SIZE=WxH sets the initial size; DM_FPS=0 hides the FPS/frame-time overlay; DM_MOUSE_DIAG=1 logs input delivery.
+-// Controllers: buttons by position as on the iPhone (right A, bottom B, top X, left Y), shoulders L R, triggers ZL ZR, Menu + Options −, both sticks and their presses.
++// Controllers: shared Mac/iOS glyph mapping (DM_PADMAP=nintendo|xbox overrides vendor detection), shoulders L R, triggers ZL ZR, Menu + Options −, both sticks and their presses.
+ #import <Cocoa/Cocoa.h>
+ #import <QuartzCore/CAMetalLayer.h>
+ #import <QuartzCore/CATransaction.h>
+@@ -12,6 +12,7 @@
+ #import <GameController/GameController.h>
+ #include "dm.h"
+ #include "dm_input.h"
++#include "dm_padmap.h"
+ #include "front.h"
+ #include "hle.h"
+ #include <signal.h>
+@@ -129,10 +130,11 @@ - (void)onTick:(NSTimer *)timer { tick(timer); }
+ // Physical controllers (GameController) go to dm_pad_set, as the iPhone's do (DmGamepad.m read_pad, same layout): ORed with the keyboard, a non-zero stick wins.
+ // DM_KEYS uses the same path, so a controller touched during a script takes it over
+ static int32_t pad_axis(float v) { return (int32_t)(fmaxf(-1.f, fminf(1.f, v)) * DM_STICK_MAX); }
+-static void pad_read(GCExtendedGamepad *g) {
++static void pad_read(GCExtendedGamepad *g, int kind) {
++    if (!NSApp.isActive) return;
+     uint64_t m = 0;
+     #define K(btn, bit) if (btn.isPressed) m |= bit
+-    K(g.buttonB, DM_BTN_A); K(g.buttonA, DM_BTN_B); K(g.buttonY, DM_BTN_X); K(g.buttonX, DM_BTN_Y);   // by position: right A, bottom B, top X, left Y
++    m |= dm_padmap_face(kind, g.buttonA.isPressed, g.buttonB.isPressed, g.buttonX.isPressed, g.buttonY.isPressed);
+     K(g.leftShoulder, DM_BTN_L); K(g.rightShoulder, DM_BTN_R); K(g.leftTrigger, DM_BTN_ZL); K(g.rightTrigger, DM_BTN_ZR);
+     K(g.buttonMenu, DM_BTN_PLUS); K(g.buttonOptions, DM_BTN_MINUS); K(g.leftThumbstickButton, DM_BTN_LS); K(g.rightThumbstickButton, DM_BTN_RS);   // nil on pads without them: not pressed
+     K(g.dpad.left, DM_BTN_LEFT); K(g.dpad.up, DM_BTN_UP); K(g.dpad.right, DM_BTN_RIGHT); K(g.dpad.down, DM_BTN_DOWN);
+@@ -142,8 +144,10 @@ static void pad_read(GCExtendedGamepad *g) {
+ static void pads_changed(void) {   // every connected pad reports (the last one moved wins); when the last one goes away its buttons and sticks are released
+     int any = 0;
+     for (GCController *c in GCController.controllers) if (c.extendedGamepad) {
+-        any = 1; c.extendedGamepad.valueChangedHandler = ^(GCExtendedGamepad *g, GCControllerElement *el) { (void)el; pad_read(g); };
+-        pad_read(c.extendedGamepad);
++        int kind = dm_padmap_select(getenv("DM_PADMAP"), c.productCategory.UTF8String, c.vendorName.UTF8String);
++        LOG("[gamepad] vendor=%s category=%s layout=%s", c.vendorName.UTF8String ?: "?", c.productCategory.UTF8String ?: "?", kind == DM_PADKIND_NINTENDO ? "Nintendo" : "Xbox");
++        any = 1; c.extendedGamepad.valueChangedHandler = ^(GCExtendedGamepad *g, GCControllerElement *el) { (void)el; pad_read(g, kind); };
++        pad_read(c.extendedGamepad, kind);
+     }
+     if (!any) dm_pad_set(0, 0, 0, 0, 0);
+ }
+diff --git a/dm/host/tests/Makefile b/dm/host/tests/Makefile
+index f4712a2..96ee822 100644
+--- a/dm/host/tests/Makefile
++++ b/dm/host/tests/Makefile
+@@ -4,7 +4,8 @@ B = build
+ # tests that use the game profile need GAME=<base game title ID> (there is no default game); GINC only expands when used, so tests without the profile build as before
+ GINC = $(if $(strip $(GAME)),-I../gen/$(GAME) -I../../games/$(GAME),$(error GAME is not set: make GAME=<base game title ID>: $(shell python3 ../../games/game.py list | awk -F'\t' '{printf "%s (%s)  ", $$1, $$3}')))
+ GAME_H = ../gen/$(GAME)/game_profile.h
+-run: $(B)/t_touch $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_pctl $(B)/t_time
++run: $(B)/t_padmap $(B)/t_touch $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_pctl $(B)/t_time
++	$(B)/t_padmap
+ 	$(B)/t_touch
+ 	$(B)/t_oe 2>/dev/null
+ 	$(B)/t_fs 2>/dev/null
+@@ -19,6 +20,8 @@ run: $(B)/t_touch $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $
+ 	$(B)/t_condvar_old
+ 	$(B)/t_pctl
+ 	$(B)/t_time
++$(B)/t_padmap: t_padmap.c ../dm_padmap.h ../dm_input.h | $(B)
++	clang -O1 -Wall -Werror -o $@ t_padmap.c
+ $(GAME_H):
+ 	$(MAKE) -C .. game_profile GAME=$(GAME)
+ $(B)/t_touch: t_touch.c ../hle_touch.c ../front.h ../dm.h $(GAME_H) | $(B)
+diff --git a/dm/host/tests/t_padmap.c b/dm/host/tests/t_padmap.c
+new file mode 100644
+index 0000000..6c9245f
+--- /dev/null
++++ b/dm/host/tests/t_padmap.c
+@@ -0,0 +1,21 @@
++#include <assert.h>
++#include <stdio.h>
++#include "../dm_padmap.h"
++int main(void) {
++    assert(dm_padmap_kind("Switch Pro Controller", "Pro Controller") == DM_PADKIND_NINTENDO);
++    assert(dm_padmap_kind(NULL, "NINTENDO") == DM_PADKIND_NINTENDO);
++    assert(dm_padmap_kind("Joy-Con (L/R)", NULL) == DM_PADKIND_NINTENDO);
++    assert(dm_padmap_kind(NULL, NULL) == DM_PADKIND_XBOX);
++    assert(dm_padmap_kind("DualSense", "Sony") == DM_PADKIND_XBOX);
++    assert(dm_padmap_select("XBOX", "Switch Pro Controller", "Nintendo") == DM_PADKIND_XBOX);
++    assert(dm_padmap_select("Nintendo", "Xbox", "Microsoft") == DM_PADKIND_NINTENDO);
++    assert(dm_padmap_select("auto", "Switch", NULL) == DM_PADKIND_NINTENDO);
++    for (int bits = 0; bits < 16; bits++) {
++        int south = bits & 1, east = bits & 2, west = bits & 4, north = bits & 8;
++        uint64_t xbox = (south ? DM_BTN_A : 0) | (east ? DM_BTN_B : 0) | (west ? DM_BTN_X : 0) | (north ? DM_BTN_Y : 0);
++        uint64_t nintendo = (east ? DM_BTN_A : 0) | (south ? DM_BTN_B : 0) | (north ? DM_BTN_X : 0) | (west ? DM_BTN_Y : 0);
++        assert(dm_padmap_face(DM_PADKIND_XBOX, south, east, west, north) == xbox);
++        assert(dm_padmap_face(DM_PADKIND_NINTENDO, south, east, west, north) == nintendo);
++    }
++    puts("padmap: vendor detection, explicit overrides and 32 face combinations passed");
++}
+diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
+index 381c78f..dc1572d 100644
+--- a/dm/ios/Sources/DmGamepad.m
++++ b/dm/ios/Sources/DmGamepad.m
+@@ -9,7 +9,7 @@
+ //     then in 3D the right stick for a touch in the right third.
+ //   Everything hugs the edges and corners to leave the picture room; controls sit over the picture, one CAShapeLayer each: a press only swaps the fill, a stick only moves its knob, nothing redraws the whole screen.
+ //   Touches no control takes (in 3D, those outside the right third) go to the game's touch screen (pushGame; Super Mario Galaxy's pointer in handheld mode).
+-//   The virtual gamepad (layout button included) hides while a physical controller is connected and comes back when it is removed; meanwhile every touch goes to the game. Physical controllers keep every button (D-pad and right stick included) and map by position: bottom = B, right = A, left = Y, top = X (same positions as on a Switch controller).
++//   The virtual gamepad (layout button included) hides while a physical controller is connected and comes back when it is removed; meanwhile every touch goes to the game. Physical controllers keep every button (D-pad and right stick included) and use the shared glyph mapping (DM_PADMAP overrides vendor detection).
+ //   Shaking the phone shakes the controller (DM_BTN_SHAKE: its six-axis sensor, hle_hid.c), whichever controls are in use; see "Shaking the phone" below.
+ #import <UIKit/UIKit.h>
+ #import <GameController/GameController.h>
+@@ -18,6 +18,7 @@
+ #include <pthread.h>
+ #include "dm.h"
+ #include "dm_input.h"
++#include "dm_padmap.h"
+ #include "front.h"
+ #include "game_profile.h"
+ 
+@@ -396,14 +397,28 @@ - (void)refresh {   // pressed state → fill, sticks → knob position
+ 
+ // ---- Physical controllers ----
+ static int32_t axis(float v) { return (int32_t)(fmaxf(-1.f, fminf(1.f, v)) * 32767); }
+-static void read_pad(GCExtendedGamepad *g) {
++
++// The face buttons of a physical controller: the system gives the four of them by position
++// (buttonA bottom, buttonB right, buttonX left, buttonY top), not by the letter printed on the button,
++// so a Nintendo pad (Switch Pro, Joy-Con: A right / B bottom / X top / Y left) and an Xbox-layout pad
++// (PS5, Xbox: A bottom / B right / X left / Y top) need different letters for the game.
++// dm_padmap.h (shared with the Mac host) tells the two layouts apart by the product category / vendor
++// name. DM_PADMAP=nintendo|xbox forces the layout when the automatic detection gets it wrong
++// (the system does not always fill in the category on iOS).
++static int pad_kind(GCController *c) {
++    return dm_padmap_select(getenv("DM_PADMAP"), c.productCategory.UTF8String, c.vendorName.UTF8String);
++}
++
++static void read_pad(GCExtendedGamepad *g, int kind) {
+     uint64_t m = 0;
+-    #define K(btn, bit) if (btn.isPressed) m |= 1ull << bit
+-    K(g.buttonB, B_A); K(g.buttonA, B_B); K(g.buttonY, B_X); K(g.buttonX, B_Y);   // by position: right A, bottom B, top X, left Y
+-    K(g.leftShoulder, B_L); K(g.rightShoulder, B_R); K(g.leftTrigger, B_ZL); K(g.rightTrigger, B_ZR);
+-    K(g.buttonMenu, B_PLUS); if (g.buttonOptions) K(g.buttonOptions, B_MINUS);
+-    if (g.leftThumbstickButton) K(g.leftThumbstickButton, B_LS); if (g.rightThumbstickButton) K(g.rightThumbstickButton, B_RS);
+-    K(g.dpad.left, B_LEFT); K(g.dpad.up, B_UP); K(g.dpad.right, B_RIGHT); K(g.dpad.down, B_DOWN);
++    // by the glyph: a Nintendo pad has A right / B bottom / X top / Y left, an Xbox pad A bottom / B right / X left / Y top
++    m |= dm_padmap_face(kind, g.buttonA.isPressed, g.buttonB.isPressed, g.buttonX.isPressed, g.buttonY.isPressed);
++    #define K(btn, bit) if (btn.isPressed) m |= (bit)   // the DM_BTN_* values are masks, not bit indexes
++    K(g.leftShoulder, DM_BTN_L); K(g.rightShoulder, DM_BTN_R);
++    K(g.leftTrigger, DM_BTN_ZL); K(g.rightTrigger, DM_BTN_ZR);
++    K(g.buttonMenu, DM_BTN_PLUS); if (g.buttonOptions) K(g.buttonOptions, DM_BTN_MINUS);
++    if (g.leftThumbstickButton) K(g.leftThumbstickButton, DM_BTN_LS); if (g.rightThumbstickButton) K(g.rightThumbstickButton, DM_BTN_RS);
++    K(g.dpad.left, DM_BTN_LEFT); K(g.dpad.up, DM_BTN_UP); K(g.dpad.right, DM_BTN_RIGHT); K(g.dpad.down, DM_BTN_DOWN);
+     #undef K
+     pthread_mutex_lock(&g_mu);
+     g_pad_btn = m; g_pad_lx = axis(g.leftThumbstick.xAxis.value); g_pad_ly = axis(g.leftThumbstick.yAxis.value);
+@@ -414,8 +429,12 @@ static void read_pad(GCExtendedGamepad *g) {
+ - (void)padsChanged {
+     BOOL any = NO;
+     for (GCController *c in GCController.controllers) if (c.extendedGamepad) {
+-        any = YES; c.extendedGamepad.valueChangedHandler = ^(GCExtendedGamepad *g, GCControllerElement *el) { (void)el; read_pad(g); };
+-        read_pad(c.extendedGamepad);
++        any = YES;
++        int kind = pad_kind(c);
++        c.extendedGamepad.valueChangedHandler = ^(GCExtendedGamepad *g, GCControllerElement *el) { (void)el; read_pad(g, kind); };
++        read_pad(c.extendedGamepad, kind);
++        LOG("[gamepad] controller: vendor '%s', category '%s' -> %s layout", c.vendorName.UTF8String ?: "?", c.productCategory.UTF8String ?: "?",
++            kind == DM_PADKIND_NINTENDO ? "Nintendo (A right / B bottom / X top / Y left)" : "Xbox (A bottom / B right / X left / Y top)");
+     }
+     if (!any) { pthread_mutex_lock(&g_mu); g_pad_btn = 0; g_pad_lx = g_pad_ly = g_pad_rx = g_pad_ry = 0; pthread_mutex_unlock(&g_mu); publish(); }
+     dispatch_async(dispatch_get_main_queue(), ^{ self->_padOff = any; self->_controls.hidden = any; [self reset]; });

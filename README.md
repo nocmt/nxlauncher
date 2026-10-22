@@ -100,24 +100,33 @@ NxLauncher/
 
 ### The patches
 
-The upstream tree is a submodule pinned to **`bc5815a`** -- the commit our patch was made against.
-The patch carries the changes the launcher needs from the upstream tree:
+The upstream tree is a submodule pinned to **`26a72dd5620ff8ea4a0ad23240e401e3802b2c7b`**
+(the upstream `main` fetched on 2026-10-22), not to an unpublished local commit. Our changes are
+maintained independently as an ordered patch series in `patches/series`; `patches/base-commit`
+records the exact upstream baseline. See [the patch inventory and upstream PRs](patches/README.md).
 
-- the Mac host: the frame rate counter, the mouse look, the window size, the system language, the
-  memory switches, the physical controller bridge (Switch / PS5 / Xbox);
-- the iOS app: the same controller mapping, by vendor;
-- the packing script: **`--progress json`**, the machine-readable progress the GUI reads.
+```bash
+python3 Tools/prepare-nxnative.py          # apply the complete series to the pinned dependency
+python3 Tools/prepare-nxnative.py --check  # verify the complete resulting tree without changing it
+python3 -m unittest discover -s Tests -v # preparation safety and repeatability tests
+```
 
-Upstream moves on, and the patch does not apply to newer commits (upstream has since restructured
-those files). Bumping the submodule means rebasing the patch and re-verifying the build.
+Preparation keeps the submodule's HEAD at the upstream commit and leaves the patches as local
+working-tree changes. It refuses an unexpected baseline, staged edits, partially applied patches,
+and changes that do not match the complete series. `bootstrap.sh` prepares the dependency;
+`Scripts/make-home-archive.sh` verifies it before packaging, so a release cannot silently omit patches.
+
+The old `bc5815a` patch is retained under `patches/archive/` for reference only. Upstream's Mac
+controller bridge, fullscreen support and display pacing are used rather than replaced. When a
+patch is merged upstream, update the baseline, remove that patch from the series, and verify again.
 
 ### What is not automated
 
 The pipeline is general: it takes any NSP/XCI + DLC + keys. What is **not** general is the port:
 a game needs a profile in `dm/games/` (its title ID, its modules, its memory split, its shader
 tables). The upstream script can write a survey and guess a provisional profile for a game that has
-none, and packs a best-effort IPA that **may not boot**. Upstream has 16 games with a profile;
-this launcher automates those, not the porting.
+none, and packs a best-effort IPA that **may not boot**. The available profiles are listed by
+`python3 Tools/pack_pipeline.py games`; this launcher automates those, not the porting.
 
 ## License
 

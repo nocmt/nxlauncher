@@ -1,0 +1,33 @@
+From 7e98f8ef6ead627ef55edc6fe0caae47bbeb8f55 Mon Sep 17 00:00:00 2001
+From: nocmt <nocmtone@gmail.com>
+Date: Thu, 22 Oct 2026 12:09:26 +0800
+Subject: [PATCH] Make touch polling diagnostics safe for concurrent readers
+
+Use relaxed atomic state for the diagnostic counter and cached logging toggle. Preserve the legacy logging cadence and touch delivery semantics.
+---
+ dm/host/hle_hid.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/dm/host/hle_hid.c b/dm/host/hle_hid.c
+index a9b107b..45ea110 100644
+--- a/dm/host/hle_hid.c
++++ b/dm/host/hle_hid.c
+@@ -272,9 +272,12 @@ int touch_fill_n(void *out, int max, uint64_t now_ns);
+ static void touch_read(void *s, int n) {
+     // DM_TOUCH_LOG=1: the reads themselves (does the game ask for the touch state at all, and in
+     // which operation mode) plus the points it gets (in hle_touch.c).
+-    static long reads; reads++;
+-    static int lg = -1; if (lg < 0) lg = getenv("DM_TOUCH_LOG") != NULL;
+-    if (lg && (reads <= 4 || reads % 300 == 0)) LOG("[hid] the game reads the touch screen state (read %ld, the operation mode is %d, %d slots)", reads, dm_opmode(), n);
++    static _Atomic unsigned long reads;
++    unsigned long read = atomic_fetch_add_explicit(&reads, 1, memory_order_relaxed) + 1;
++    static _Atomic int lg = -1;
++    int enabled = atomic_load_explicit(&lg, memory_order_relaxed);
++    if (enabled < 0) { enabled = getenv("DM_TOUCH_LOG") != NULL; atomic_store_explicit(&lg, enabled, memory_order_relaxed); }
++    if (enabled && (read <= 4 || read % 300 == 0)) LOG("[hid] the game reads the touch screen state (read %lu, the operation mode is %d, %d slots)", read, dm_opmode(), n);
+     if (dm_opmode() == 0) { touch_fill_n(s, n, now_ns()); return; }
+     int64_t *p = s; p[0] = atomic_fetch_add(&g_sampling, 1) + 1; ((int32_t *)s)[2] = 0; ((int32_t *)s)[3] = 0;
+ }
+-- 
+2.54.0 (Apple Git-157)
+

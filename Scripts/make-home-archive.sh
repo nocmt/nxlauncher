@@ -23,6 +23,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+python3 "$HERE/Tools/prepare-nxnative.py" --check || exit 1
+
 # the standalone Python: uv's cache, or the one that was named.
 # 3.13 exactly: the wheels in Resources/wheels are the cp313 ones, and the upstream packing
 # script needs 3.12+ (it uses PEP 701 f-strings).
@@ -39,9 +41,9 @@ if [ -z "$PYTHON_DIR" ] || [ ! -x "$PYTHON_DIR/bin/python3" ]; then
 fi
 echo "python: $PYTHON_DIR ($("$PYTHON_DIR/bin/python3" -V 2>&1))"
 
-STAGE="$HERE/dist/home-stage"
-rm -rf "$STAGE"
-mkdir -p "$STAGE" "$(dirname "$OUT")" || exit 1
+mkdir -p "$HERE/dist" "$(dirname "$OUT")" || exit 1
+STAGE=$(mktemp -d "$HERE/dist/home-stage.XXXXXX") || exit 1
+trap 'rm -rf "$STAGE"' EXIT
 
 echo "copying the tools ..."
 cp -R "$HERE/Tools" "$STAGE/Tools"

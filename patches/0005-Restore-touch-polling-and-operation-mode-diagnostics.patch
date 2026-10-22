@@ -1,0 +1,45 @@
+From 253974c712f4b194f5e811d9214bb7af351d10cd Mon Sep 17 00:00:00 2001
+From: nocmt <nocmtone@gmail.com>
+Date: Thu, 22 Oct 2026 12:02:39 +0800
+Subject: [PATCH 5/6] Restore touch polling and operation-mode diagnostics
+
+Report the first four touch reads and every 300th under DM_TOUCH_LOG, including docked reads that produce no points. Retain upstream point logging, docked filtering and runtime operation-mode notifications. Log initial profile/environment selection only for the winning initialization.
+---
+ dm/host/hle_hid.c | 5 +++++
+ dm/host/hle_oe.c  | 7 ++++++-
+ 2 files changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/dm/host/hle_hid.c b/dm/host/hle_hid.c
+index 099b9bd..a9b107b 100644
+--- a/dm/host/hle_hid.c
++++ b/dm/host/hle_hid.c
+@@ -270,6 +270,11 @@ HLE_FORCE("_ZN2nn3hid28ShowControllerFirmwareUpdateERKNS0_27ControllerFirmwareUp
+ // without checking the mode, so in console mode the state stays empty (only the header is written). Super Mario Galaxy's pointer is the touch screen in handheld mode
+ int touch_fill_n(void *out, int max, uint64_t now_ns);
+ static void touch_read(void *s, int n) {
++    // DM_TOUCH_LOG=1: the reads themselves (does the game ask for the touch state at all, and in
++    // which operation mode) plus the points it gets (in hle_touch.c).
++    static long reads; reads++;
++    static int lg = -1; if (lg < 0) lg = getenv("DM_TOUCH_LOG") != NULL;
++    if (lg && (reads <= 4 || reads % 300 == 0)) LOG("[hid] the game reads the touch screen state (read %ld, the operation mode is %d, %d slots)", reads, dm_opmode(), n);
+     if (dm_opmode() == 0) { touch_fill_n(s, n, now_ns()); return; }
+     int64_t *p = s; p[0] = atomic_fetch_add(&g_sampling, 1) + 1; ((int32_t *)s)[2] = 0; ((int32_t *)s)[3] = 0;
+ }
+diff --git a/dm/host/hle_oe.c b/dm/host/hle_oe.c
+index 7a9738c..5d73647 100644
+--- a/dm/host/hle_oe.c
++++ b/dm/host/hle_oe.c
+@@ -8,7 +8,12 @@
+ static _Atomic int g_opmode = -1;
+ int dm_opmode(void) {
+     int m = g_opmode;
+-    if (m < 0) { const char *e = getenv("DM_OPMODE"); int v = e ? atoi(e) : DM_GAME_OPMODE; int exp = -1; atomic_compare_exchange_strong(&g_opmode, &exp, v); m = g_opmode; }
++    if (m < 0) {
++        const char *e = getenv("DM_OPMODE"); int v = e ? atoi(e) : DM_GAME_OPMODE, exp = -1;
++        if (atomic_compare_exchange_strong(&g_opmode, &exp, v))
++            LOG("[oe] operation mode=%d (%s), DM_OPMODE=%s profile=%d", v, v == 0 ? "handheld" : "console", e ? e : "(not set)", DM_GAME_OPMODE);
++        m = g_opmode;
++    }
+     return m;
+ }
+ // ---------- System notification queue (AppletMessage): front end state changes → fetched by the game every frame with TryPopNotificationMessage ----------
