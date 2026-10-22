@@ -67,10 +67,8 @@ NxLauncher/
 ├── patches/                   our changes to the upstream tree (see below)
 ├── nxnative/                  the upstream tree, a submodule
 ├── bootstrap.sh               the submodule + the patches + the toolchain check
-├── Resources/AppIcon.icns     the launcher's icon (drawn by Scripts/make-icon.swift)
-└── Scripts/
-    ├── make-app.sh            the launcher as a macOS .app
-    └── make-icon.sh           draws the icon again (the .icns is kept in the repository)
+├── Resources/AppIcon.icns     the launcher's icon (the Switch logo)
+└── Scripts/make-app.sh        the launcher as a macOS .app
 ```
 
 ### The patches

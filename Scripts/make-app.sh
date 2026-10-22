@@ -14,11 +14,11 @@ swift build -c release || { echo "FAIL: swift build"; exit 1; }
 BIN=$(swift build -c release --show-bin-path 2>/dev/null)/NxLauncher
 [ -x "$BIN" ] || { echo "FAIL: no binary at $BIN"; exit 1; }
 
-# the icon: it is kept in the repository, but a fresh clone without it draws it again
+# the icon: it is an asset of the repository (Resources/AppIcon.icns)
 ICON="$HERE/Resources/AppIcon.icns"
 if [ ! -f "$ICON" ]; then
-    echo "drawing the icon..."
-    bash "$HERE/Scripts/make-icon.sh" || { echo "FAIL: the icon"; exit 1; }
+    echo "FAIL: no icon at $ICON"
+    exit 1
 fi
 
 rm -rf "$OUT"
