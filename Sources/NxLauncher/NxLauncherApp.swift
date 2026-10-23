@@ -13,7 +13,7 @@ struct NxLauncherApp: App {
                 .environmentObject(state)
                 .frame(minWidth: 780, minHeight: 700)
         }
-        .defaultSize(width: 880, height: 720)
+        .defaultSize(width: 1120, height: 780)
         .commands {
             CommandGroup(replacing: .newItem) {}
         }
@@ -38,7 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.async {
             for w in NSApp.windows {
                 if w.title.isEmpty { w.title = "NxLauncher" }
-                w.setContentSize(NSSize(width: 880, height: 720))
+                w.setContentSize(NSSize(width: 1120, height: 780))
             }
         }
     }

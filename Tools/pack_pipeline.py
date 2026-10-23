@@ -15,6 +15,8 @@ Commands
   export  --target mac-app|ios-ipa|ios-ipa-unsigned --work DIR --game ID --ver VER --out PATH
           [--repo DIR] [--dlc DIR] [--keys FILE]
           The Mac .app or the iOS IPA from an already built work folder.
+  doctor  [--repo DIR]
+          Check the build toolchain and report missing dependencies without installing anything.
   games   [--repo DIR]
           The games that have a port (a profile), with their name and version.
 
@@ -28,6 +30,8 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+from toolchain import build_environment, doctor
 
 # ---- the event vocabulary (the same one the upstream script uses) ----
 def emit(**obj):
@@ -145,12 +149,17 @@ def file_info(f):
     }
 
 
-def profile_for(repo, title_id):
-    """The game's port: the profile folder in dm/games/. Its presence is what "the game has a port" means."""
-    if not repo or not title_id:
+def profile_for(repo, title_id, work=None):
+    """Find the repository profile or the provisional profile from this build."""
+    if not title_id:
         return None
-    d = repo / 'dm' / 'games' / title_id
-    if not (d / 'game.tsv').is_file():
+    extra = [Path(p) for p in os.environ.get('DM_GAMES_DIR', '').split(os.pathsep) if p]
+    if work:
+        extra.append(Path(work) / 'profile')
+    roots = ([repo / 'dm' / 'games'] if repo else [])
+    roots = extra + roots if os.environ.get('DM_GAMES_FIRST') else roots + extra
+    d = next((root / title_id for root in roots if (root / title_id / 'game.tsv').is_file()), None)
+    if d is None:
         return None
     vals = {}
     for line in (d / 'game.tsv').read_text(errors='replace').splitlines():
@@ -161,7 +170,7 @@ def profile_for(repo, title_id):
     return {
         'dir': str(d),
         'name': vals.get('name', title_id),
-        'version': (vals.get('build', '').split() or [''])[1] or vals.get('package', ''),
+        'version': vals.get('package', '') or (vals.get('build', '').split() or [''])[0],
         'modules': vals.get('modules', ''),
         'fps_target': vals.get('fps_target', ''),
         'mem_pool': vals.get('app_pool', ''),
@@ -196,11 +205,12 @@ def cmd_plan(args):
         m = TITLE_RE.search(base.name)
         title_id = m.group(1).upper() if m else ''
 
-    prof = profile_for(repo, title_id)
+    work = work_dir_of(game_dir, title_id) if title_id else None
+    prof = profile_for(repo, title_id, work)
     if not prof and title_id:
         notes.append('这款游戏还没有移植档案（dm/games/ 下没有），只能出"尽力而为"的包，可能起不来')
-
-    work = work_dir_of(game_dir, title_id) if title_id else None
+    elif prof and (Path(prof['dir']) / 'game.tsv').read_text(errors='replace').startswith('# Provisional'):
+        notes.append('当前使用自动生成的临时移植档案，尚未验证游戏运行兼容性')
     built = False
     ver = prof['version'] if prof else ''
     icon = ''
@@ -283,6 +293,22 @@ def stream(cmd, cwd=None, env=None, label=None):
     return p.returncode
 
 
+def cmd_doctor(args):
+    report = doctor(find_repo(args.repo), find_python(), os.environ)
+    emit(ev='dependencies', **report)
+    return 0
+
+
+def require_build_dependencies(repo):
+    report = doctor(repo, find_python(), os.environ)
+    emit(ev='dependencies', **report)
+    if report['ready']:
+        return True
+    missing = ', '.join(c['name'] for c in report['checks'] if not c['ok'])
+    emit(ev='error', message=f'Build dependencies are not ready: {missing}. See the build environment panel.')
+    return False
+
+
 def cmd_build(args):
     repo = find_repo(args.repo)
     if not repo:
@@ -296,6 +322,8 @@ def cmd_build(args):
         emit(ev='error', message='prod.keys not found')
         return 2
 
+    if not require_build_dependencies(repo):
+        return 2
     py = find_python()
     cmd = [py, str(repo / 'scripts' / 'build_ipa_from_nsp.py'), str(game_dir),
            '-k', str(Path(args.keys).expanduser()), '--progress', 'json']
@@ -314,11 +342,20 @@ def cmd_build(args):
 def cmd_export(args):
     repo = find_repo(args.repo)
     tools = Path(__file__).resolve().parent
-    work = Path(args.work).expanduser()
-    out = Path(args.out).expanduser()
+    work = Path(args.work).expanduser().resolve()
+    out = Path(args.out).expanduser().resolve()
     game, ver = args.game, args.ver
-    # the packaging scripts need to know where the nxnative source tree is
-    repo_arg = ['--repo', str(repo)] if repo else []
+    if not repo or not work.is_dir():
+        emit(ev='error', message=f'nxnative source tree or build folder not found: {work}')
+        return 2
+    if out.exists():
+        emit(ev='error', message=f'导出位置已存在，请选择新的文件名或文件夹：{out}')
+        return 2
+    out.parent.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ)
+    profiles = str(work / 'profile')
+    env['DM_GAMES_DIR'] = os.pathsep.join(filter(None, [env.get('DM_GAMES_DIR', ''), profiles]))
+    repo_arg = ['--repo', str(repo)]
 
     if args.target == 'mac-app':
         script = tools / 'make-mac-app.sh'
@@ -332,17 +369,19 @@ def cmd_export(args):
         stage('export', step='the Mac .app')
     else:
         script = tools / ('make-signed-ipa.sh' if args.target == 'ios-ipa' else 'make-unsigned-ipa.sh')
-        cmd = ['bash', str(script), str(out)] + repo_arg
+        cmd = ['bash', str(script), '--out', str(out), '--work', str(work),
+               '--game', game, '--ver', ver] + repo_arg
         stage('export', step='the iOS IPA')
 
     try:
-        rc = stream(cmd, cwd=repo)
+        rc = stream(cmd, cwd=repo, env=env)
     except Failed as e:
         stage_end('export', ok=False, summary=str(e))
         return 1
-    ok = rc == 0 and (out.exists() if out.is_dir() else out.parent.exists())
-    stage_end('export', ok=rc == 0, summary=str(out) if rc == 0 else f'the script exited {rc}')
-    return 0 if rc == 0 else 1
+    ok = rc == 0 and (out.is_dir() if args.target == 'mac-app' else out.is_file() and out.stat().st_size > 0)
+    summary = str(out) if ok else (f'the script exited {rc}' if rc else f'export did not create {out}')
+    stage_end('export', ok=ok, summary=summary)
+    return 0 if ok else 1
 
 
 def main(argv):
@@ -355,6 +394,10 @@ def main(argv):
     p.add_argument('--keys', default='')
     p.add_argument('--repo', default='')
     p.set_defaults(func=cmd_plan)
+
+    p = sub.add_parser('doctor', help='check build dependencies without installing anything')
+    p.add_argument('--repo', default='')
+    p.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser('games', help='the games that have a port')
     p.add_argument('--repo', default='')
@@ -384,4 +427,5 @@ def main(argv):
 
 
 if __name__ == '__main__':
+    os.environ.update(build_environment())
     sys.exit(main(sys.argv[1:]))

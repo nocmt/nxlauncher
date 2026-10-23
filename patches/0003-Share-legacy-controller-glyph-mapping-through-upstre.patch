@@ -6,18 +6,8 @@ Subject: [PATCH 3/6] Share legacy controller glyph mapping through upstream
 
 Recover the tracked helper from 7463eba (inherited from bc5815a), absent from the exported legacy patch. Keep vendor auto-detection and DM_PADMAP=nintendo|xbox, including a working explicit Xbox override. Keep the existing Mac/iOS controller publishing and disconnect paths; do not revive front_gamepad_mac.m. Test vendor detection, overrides and every face-button combination.
 ---
- dm/host/Makefile           |  2 +-
- dm/host/dm_padmap.h        | 32 +++++++++++++++++++++++++++++++
- dm/host/front_mac.m        | 14 +++++++++-----
- dm/host/tests/Makefile     |  5 ++++-
- dm/host/tests/t_padmap.c   | 21 ++++++++++++++++++++
- dm/ios/Sources/DmGamepad.m | 39 ++++++++++++++++++++++++++++----------
- 6 files changed, 96 insertions(+), 17 deletions(-)
- create mode 100644 dm/host/dm_padmap.h
- create mode 100644 dm/host/tests/t_padmap.c
-
 diff --git a/dm/host/Makefile b/dm/host/Makefile
-index a50df6c..68c4510 100644
+index a50df6c10adc29c0814d8a336b2ba966c050a0a1..68c451065e03bdfed70134902ce87612464f503a 100644
 --- a/dm/host/Makefile
 +++ b/dm/host/Makefile
 @@ -50,7 +50,7 @@ endif
@@ -31,7 +21,7 @@ index a50df6c..68c4510 100644
  	rm -rf gen dmhost dmhost_* *.dSYM
 diff --git a/dm/host/dm_padmap.h b/dm/host/dm_padmap.h
 new file mode 100644
-index 0000000..465bfb0
+index 0000000000000000000000000000000000000000..465bfb09c0a1d570f2c0a8297bfc026cd6efb0a8
 --- /dev/null
 +++ b/dm/host/dm_padmap.h
 @@ -0,0 +1,32 @@
@@ -68,7 +58,7 @@ index 0000000..465bfb0
 +    return (south ? DM_BTN_A : 0) | (east ? DM_BTN_B : 0) | (west ? DM_BTN_X : 0) | (north ? DM_BTN_Y : 0);
 +}
 diff --git a/dm/host/front_mac.m b/dm/host/front_mac.m
-index afa480b..a7cf45b 100644
+index 392719d425f3ba7de1723a046a132134459031e8..97a286ef0435680ca8ae69ad6c78684d7156bb6b 100644
 --- a/dm/host/front_mac.m
 +++ b/dm/host/front_mac.m
 @@ -4,7 +4,7 @@
@@ -88,7 +78,7 @@ index afa480b..a7cf45b 100644
  #include "front.h"
  #include "hle.h"
  #include <signal.h>
-@@ -129,10 +130,11 @@ - (void)onTick:(NSTimer *)timer { tick(timer); }
+@@ -134,10 +135,11 @@ - (void)onTick:(NSTimer *)timer { tick(timer); }
  // Physical controllers (GameController) go to dm_pad_set, as the iPhone's do (DmGamepad.m read_pad, same layout): ORed with the keyboard, a non-zero stick wins.
  // DM_KEYS uses the same path, so a controller touched during a script takes it over
  static int32_t pad_axis(float v) { return (int32_t)(fmaxf(-1.f, fminf(1.f, v)) * DM_STICK_MAX); }
@@ -102,7 +92,7 @@ index afa480b..a7cf45b 100644
      K(g.leftShoulder, DM_BTN_L); K(g.rightShoulder, DM_BTN_R); K(g.leftTrigger, DM_BTN_ZL); K(g.rightTrigger, DM_BTN_ZR);
      K(g.buttonMenu, DM_BTN_PLUS); K(g.buttonOptions, DM_BTN_MINUS); K(g.leftThumbstickButton, DM_BTN_LS); K(g.rightThumbstickButton, DM_BTN_RS);   // nil on pads without them: not pressed
      K(g.dpad.left, DM_BTN_LEFT); K(g.dpad.up, DM_BTN_UP); K(g.dpad.right, DM_BTN_RIGHT); K(g.dpad.down, DM_BTN_DOWN);
-@@ -142,8 +144,10 @@ static void pad_read(GCExtendedGamepad *g) {
+@@ -147,8 +149,10 @@ static void pad_read(GCExtendedGamepad *g) {
  static void pads_changed(void) {   // every connected pad reports (the last one moved wins); when the last one goes away its buttons and sticks are released
      int any = 0;
      for (GCController *c in GCController.controllers) if (c.extendedGamepad) {
@@ -116,7 +106,7 @@ index afa480b..a7cf45b 100644
      if (!any) dm_pad_set(0, 0, 0, 0, 0);
  }
 diff --git a/dm/host/tests/Makefile b/dm/host/tests/Makefile
-index f4712a2..96ee822 100644
+index f4712a21823bafdf4092b7650073f5523f37e0fa..96ee8223b168cf57db7c5f894e08fa7dbb2180cc 100644
 --- a/dm/host/tests/Makefile
 +++ b/dm/host/tests/Makefile
 @@ -4,7 +4,8 @@ B = build
@@ -140,7 +130,7 @@ index f4712a2..96ee822 100644
  $(B)/t_touch: t_touch.c ../hle_touch.c ../front.h ../dm.h $(GAME_H) | $(B)
 diff --git a/dm/host/tests/t_padmap.c b/dm/host/tests/t_padmap.c
 new file mode 100644
-index 0000000..6c9245f
+index 0000000000000000000000000000000000000000..6c9245f1cf3e428d7b3cdb6d79f57e80aa58eddc
 --- /dev/null
 +++ b/dm/host/tests/t_padmap.c
 @@ -0,0 +1,21 @@
@@ -166,7 +156,7 @@ index 0000000..6c9245f
 +    puts("padmap: vendor detection, explicit overrides and 32 face combinations passed");
 +}
 diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
-index 381c78f..dc1572d 100644
+index 381c78fcaebb30f3b6328885fbd4ae31a5371cf7..dc1572d026536639d342edb9abe8a99bc45f6b70 100644
 --- a/dm/ios/Sources/DmGamepad.m
 +++ b/dm/ios/Sources/DmGamepad.m
 @@ -9,7 +9,7 @@

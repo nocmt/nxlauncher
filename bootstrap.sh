@@ -39,11 +39,7 @@ fi
 
 say
 say "=== the toolchain ==="
-need xcodegen   "brew install xcodegen"
-need zstd       "brew install zstd"
-need spirv-cross "brew install spirv-cross"
-need dotnet     "brew install --cask dotnet-sdk"
-need python3    "the one in the PATH (the venv below is made from it)"
+need python3    "Python 3.12+ (the venv below is made from it)"
 need swift      "Xcode's toolchain"
 
 say
@@ -58,8 +54,8 @@ if [ ! -x "$VENV/bin/python3" ]; then
   fi
 fi
 if [ -x "$VENV/bin/pip3" ] && [ $CHECK -eq 0 ]; then
-  say "  installing lz4 capstone fonttools pillow ..."
-  "$VENV/bin/pip3" install --quiet --upgrade lz4 capstone fonttools pillow || { say "  ✗ the install failed"; miss=1; }
+  say "  installing lz4 capstone fonttools pillow backports.zstd ..."
+  "$VENV/bin/pip3" install --quiet --upgrade lz4 capstone fonttools pillow backports.zstd || { say "  ✗ the install failed"; miss=1; }
 fi
 if [ -x "$VENV/bin/python3" ]; then
   if "$VENV/bin/python3" -c "import lz4, capstone, fontTools" >/dev/null 2>&1; then
@@ -70,6 +66,30 @@ if [ -x "$VENV/bin/python3" ]; then
   fi
   if "$VENV/bin/python3" -c "import PIL" >/dev/null 2>&1; then say "  ✓ $VENV/bin/python3 has PIL (the .icns writer)"
   else say "  ✗ $VENV/bin/python3 needs Pillow"; miss=1; fi
+  if "$VENV/bin/python3" -c "import compression.zstd" >/dev/null 2>&1 ||
+     "$VENV/bin/python3" -c "import backports.zstd" >/dev/null 2>&1; then
+    say "  ✓ $VENV/bin/python3 has zstd support"
+  else
+    say "  ✗ $VENV/bin/python3 needs backports.zstd (before Python 3.14)"; miss=1
+  fi
+  say
+  say "=== detailed build environment ==="
+  "$VENV/bin/python3" -B - "$HERE" <<'PY' || miss=1
+import sys
+from pathlib import Path
+root = Path(sys.argv[1])
+sys.path.insert(0, str(root / 'Tools'))
+from toolchain import build_environment, doctor
+report = doctor(root / 'nxnative', sys.executable, build_environment())
+for check in report['checks']:
+    print(('  ✓ ' if check['ok'] else '  ✗ ') + check['name'])
+    if not check['ok']:
+        print('    ' + check['detail'].replace('\n', '\n    '))
+        print('    ' + check['hint'])
+for command in report['commands']:
+    print('    suggestion: ' + command)
+sys.exit(0 if report['ready'] else 1)
+PY
 else
   say "  ✗ no venv at $VENV"
   miss=1

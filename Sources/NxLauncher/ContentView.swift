@@ -4,36 +4,38 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var state: LauncherState
+    @State private var workspace = false
+    @State private var showGeneralSettings = false
+    @State private var showLog = false
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
-            VStack(spacing: 0) {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
-                        header
-                        progressStrip
-                        gameData
-                        settings
-                        log
-                    }
-                    .padding(18)
-                    .frame(maxWidth: 820, alignment: .leading)
-                    .frame(maxWidth: .infinity)
+            Group {
+                if workspace {
+                    workspaceView
+                } else {
+                    GameLibraryView(openWorkspace: { workspace = true }, addGame: pickGameFolder,
+                                    openSettings: { showGeneralSettings = true })
                 }
-                .background(
-                    LinearGradient(colors: [DS.windowTop, DS.windowBottom],
-                                   startPoint: .top, endPoint: .bottom)
-                )
-                Divider()
-                actionBar
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 12)
-                    .background(.bar)
+            }
+            .sheet(isPresented: $showGeneralSettings) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        HStack {
+                            Text("通用设置").font(.system(size: 21, weight: .semibold))
+                            Spacer()
+                            Button("完成") { showGeneralSettings = false }.buttonStyle(QuietButtonStyle())
+                        }
+                        globalSettings
+                        buildEnvironment
+                    }.padding(24)
+                }.frame(width: 640, height: 580)
             }
             .onAppear {
                 state.loadEnv()          // what is really in effect, from env.txt
                 // the app carries its own tools (in an archive): unpack them before anything runs
                 state.prepare {
+                    state.checkDependencies()
                     state.loadGames()
                     if !state.gameDir.isEmpty { state.refreshPlan() }
                 }
@@ -53,6 +55,34 @@ struct ContentView: View {
         }
         .preferredColorScheme(state.appearance.colorScheme)
         .animation(.easeOut(duration: 0.22), value: state.toast)
+    }
+
+    private var workspaceView: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button { workspace = false } label: { Label("游戏库", systemImage: "chevron.left") }
+                    .buttonStyle(QuietButtonStyle())
+                Spacer()
+                Text("游戏工作区").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
+            }.padding(.horizontal, 24).padding(.vertical, 12)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    header
+                    if state.busy { progressStrip }
+                    gameData
+                    settings
+                    DisclosureGroup("构建日志（\(state.logLines.count) 条）", isExpanded: $showLog) { log }
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .padding(24)
+                .frame(maxWidth: 1120, alignment: .leading).frame(maxWidth: .infinity)
+            }
+            Divider()
+            actionBar.padding(.horizontal, 24).padding(.vertical, 12).background(.bar)
+        }
+        .background(LinearGradient(colors: [DS.windowTop, DS.windowBottom], startPoint: .top, endPoint: .bottom))
+        .onChange(of: state.busy) { _, running in if running { showLog = true } }
     }
 
     // MARK: - the progress strip (always visible)
@@ -108,13 +138,10 @@ struct ContentView: View {
                 StatusDot(text: statusLine, color: statusColor)
             }
             Spacer(minLength: 10)
-            Picker("", selection: $state.language) {
-                ForEach(LauncherState.Language.allCases) { l in Text(l.rawValue).tag(l) }
+            if let game = state.library.first(where: { $0.id == state.selectedGameID }) {
+                Button { state.revealGameFolder(game) } label: { Label("显示文件夹", systemImage: "folder") }
+                    .buttonStyle(QuietButtonStyle())
             }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .frame(width: 140)
-            .onChange(of: state.language) { _, _ in state.writeEnv() }
         }
         .padding(.horizontal, 4)
         .padding(.bottom, 2)
@@ -128,7 +155,7 @@ struct ContentView: View {
         guard let p = state.plan else { return "还没有选择游戏文件夹" }
         if !p.repoOK { return "找不到 nxnative 源码目录" }
         if p.built { return "已就绪 · \(p.version)" }
-        return "还没有编译过"
+        return "未编译"
     }
 
     private var statusColor: Color {
@@ -181,9 +208,9 @@ struct ContentView: View {
                 Spacer(minLength: 8)
                 Button("重新读取") { state.refreshPlan() }
                     .buttonStyle(QuietButtonStyle())
-                    .disabled(state.gameDir.isEmpty)
-                Button("选择…") { pickGameFolder() }
-                    .buttonStyle(SecondaryButtonStyle())
+                    .disabled(state.gameDir.isEmpty || state.busy)
+                Button("更换…") { pickGameFolder() }
+                    .buttonStyle(SecondaryButtonStyle()).disabled(state.busy)
             }
 
             VStack(spacing: 0) {
@@ -199,22 +226,8 @@ struct ContentView: View {
                 DataRow(title: "移植档案", detail: state.plan?.hasPort == true ? "已就绪 · \(state.plan?.version ?? "")" : "没有移植档案",
                         state: state.plan?.hasPort == true ? .ok : .warn)
                 Divider().padding(.leading, 12)
-                DataRow(title: "着色器缓存", detail: state.plan?.built == true ? "已编译（可直接导出）" : "未编译（首次要 30–60 分钟）",
+                DataRow(title: "着色器缓存", detail: state.plan?.built == true ? "已编译" : "未编译",
                         state: state.plan?.built == true ? .ok : .idle)
-                Divider().padding(.leading, 12)
-                HStack(spacing: 10) {
-                    Image(systemName: "key")
-                        .font(.system(size: 13))
-                        .foregroundStyle(state.keysPath.isEmpty ? DS.idle : DS.ok)
-                    Text("主机密钥").font(.system(size: 13))
-                    Spacer(minLength: 12)
-                    Text(state.keysPath.isEmpty ? "还没有选择" : (state.keysPath as NSString).lastPathComponent)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                    Button("选择…") { pickKeys() }
-                        .buttonStyle(QuietButtonStyle())
-                }
-                .padding(.horizontal, 12)
                 .padding(.vertical, 8)
             }
             .background(DS.row, in: RoundedRectangle(cornerRadius: DS.small, style: .continuous))
@@ -237,15 +250,13 @@ struct ContentView: View {
     // MARK: - the settings
 
     private var settings: some View {
-        Card(title: "设置", systemImage: "slider.horizontal.3") {
+        Card(title: "游戏设置", systemImage: "slider.horizontal.3") {
             VStack(spacing: 0) {
-                settingRow("外观") {
-                    Picker("", selection: $state.appearance) {
-                        ForEach(LauncherState.Appearance.allCases) { a in Text(a.rawValue).tag(a) }
-                    }
-                    .labelsHidden()
-                    .frame(width: 160)
-                    .onChange(of: state.appearance) { _, _ in state.appearanceChanged() }
+                settingRow("游戏语言") {
+                    Picker("", selection: $state.language) {
+                        ForEach(LauncherState.Language.allCases) { l in Text(l.rawValue).tag(l) }
+                    }.labelsHidden().frame(width: 190)
+                        .onChange(of: state.language) { _, _ in state.runtimeSettingsChanged() }
                 }
                 Divider().padding(.leading, 12)
                 settingRow("目标帧率") {
@@ -255,7 +266,7 @@ struct ContentView: View {
                     }
                     .labelsHidden()
                     .frame(width: 160)
-                    .onChange(of: state.targetFPS) { _, _ in state.writeEnv() }
+                    .onChange(of: state.targetFPS) { _, _ in state.runtimeSettingsChanged() }
                 }
                 Divider().padding(.leading, 12)
                 settingRow("运行模式") {
@@ -264,20 +275,41 @@ struct ContentView: View {
                     }
                     .labelsHidden()
                     .frame(width: 190)
-                    .onChange(of: state.opMode) { _, _ in state.opModeChanged() }
+                    .onChange(of: state.opMode) { _, _ in state.runtimeSettingsChanged() }
                 }
-                // What the mode means, right under the picker: the choice is not obvious.
-                Text(modeHint)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 9)
-                Divider().padding(.leading, 12)
+                .help(modeHint)
             }
+            .disabled(state.busy)
             .background(DS.row, in: RoundedRectangle(cornerRadius: DS.small, style: .continuous))
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var keysSetting: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                Image(systemName: "key").foregroundStyle(state.keysPath.isEmpty ? DS.warn : DS.ok)
+                Text("主机密钥").font(.system(size: 12, weight: .medium))
+                Spacer(minLength: 0)
+                Button(state.keysPath.isEmpty ? "选择…" : "更换…", action: pickKeys)
+                    .buttonStyle(QuietButtonStyle()).disabled(state.busy)
+            }
+            Text(state.keysPath.isEmpty ? "未选择 prod.keys" : state.keysPath)
+                .font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
+                .lineLimit(1).truncationMode(.middle).help(state.keysPath)
+        }.padding(12)
+    }
+
+    private var globalSettings: some View {
+        Card(title: "偏好设置", systemImage: "slider.horizontal.3") {
+            keysSetting
+            Divider()
+            settingRow("外观") {
+                Picker("", selection: $state.appearance) {
+                    ForEach(LauncherState.Appearance.allCases) { a in Text(a.rawValue).tag(a) }
+                }.labelsHidden().frame(width: 180)
+                    .onChange(of: state.appearance) { _, _ in state.appearanceChanged() }
+            }
         }
     }
 
@@ -291,18 +323,79 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// The meaning of the chosen mode, in one line: the resolution the game renders at, and what
-    /// the mouse does.
     private var modeHint: String {
         switch state.opMode {
         case .handheld:
-            return "掌机模式：游戏按 1280×720 渲染（与窗口 1:1，文字最锐利）。Switch 掌机有触摸屏，鼠标左键 = 确认键，菜单可以直接点。"
+            return "1280×720，鼠标左键可确认。"
         case .console:
-            return "主机模式：游戏按 1920×1080 渲染（窗口大于 1280×720 时更清晰）。Switch 主机没有触摸屏，鼠标左键不能用于点击确认，菜单请用键盘（方向键选择、J 确认）或手柄。"
+            return "1920×1080，使用键盘或手柄确认。"
         }
     }
 
-    // MARK: - the action bar (always visible at the bottom)
+    // MARK: - the build environment
+
+    private var buildEnvironment: some View {
+        Card(title: "编译环境", systemImage: "wrench.and.screwdriver") {
+            if state.checkingDependencies && state.dependencies == nil {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("检查中…")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+            } else if let report = state.dependencies {
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack {
+                        Text(report.ready ? "可开始编译" : "缺少必需依赖")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(report.ready ? DS.ok : DS.warn)
+                        Spacer()
+                        Button { state.checkDependencies() } label: {
+                            Label("重新检查", systemImage: "arrow.clockwise")
+                        }
+                        .buttonStyle(QuietButtonStyle())
+                    }
+                    DisclosureGroup("依赖详情（\(report.checks.filter { $0.ok }.count)/\(report.checks.count) 已就绪）", isExpanded: $state.showDependencies) {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 8) {
+                                ForEach(report.checks) { check in
+                                    HStack(alignment: .top, spacing: 8) {
+                                        Image(systemName: check.ok ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                            .foregroundStyle(check.ok ? DS.ok : DS.bad).frame(width: 14)
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(check.name).font(.system(size: 11, weight: .medium))
+                                            Text(check.detail).font(.system(size: 10)).foregroundStyle(.secondary)
+                                                .lineLimit(check.ok ? 2 : nil).textSelection(.enabled)
+                                            if !check.ok {
+                                                Text(check.hint).font(.system(size: 10)).foregroundStyle(DS.warn)
+                                                    .textSelection(.enabled)
+                                            }
+                                        }
+                                        Spacer(minLength: 0)
+                                    }
+                                }
+                            }.padding(.vertical, 8)
+                        }.frame(height: 240)
+                    }
+                    if !report.commands.isEmpty {
+                        Text(report.commands.joined(separator: "\n"))
+                            .font(.system(size: 10, design: .monospaced))
+                            .textSelection(.enabled)
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(DS.row, in: RoundedRectangle(cornerRadius: 5))
+                    }
+                }
+            } else if !state.dependencyError.isEmpty {
+                Text(state.dependencyError).font(.system(size: 11)).foregroundStyle(DS.bad)
+                Button("重新检查") { state.checkDependencies() }
+                    .buttonStyle(QuietButtonStyle())
+            } else {
+                Text("尚未检查").font(.system(size: 11)).foregroundStyle(.secondary)
+                Button("检查编译环境") { state.checkDependencies() }
+                    .buttonStyle(QuietButtonStyle())
+            }
+        }
+    }
 
     private var actionBar: some View {
         HStack(spacing: 10) {
@@ -343,30 +436,25 @@ struct ContentView: View {
         }
         guard let p = state.plan else { return "先选择一个游戏文件夹" }
         if !p.repoOK { return "找不到 nxnative 源码目录" }
-        return p.built ? "已编译 · \(p.version) · 可以直接开始游戏" : "首次编译需要 30–60 分钟"
+        return p.built ? "已编译 · \(p.version)" : "未编译"
     }
 
     // MARK: - the log
 
     private var log: some View {
-        Card(title: "日志", systemImage: "text.alignleft") {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(Array(state.logLines.enumerated()), id: \.offset) { _, line in
-                        Text(line)
-                            .font(.system(size: 10.5, design: .monospaced))
-                            .foregroundStyle(line.hasPrefix("✗") ? DS.bad : .secondary)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    if state.logLines.isEmpty {
-                        Text("还没有输出。").font(.system(size: 10.5)).foregroundStyle(.tertiary)
-                    }
-                }
-                .padding(8)
+        VStack(alignment: .trailing, spacing: 8) {
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(state.logLines.joined(separator: "\n"), forType: .string)
+            } label: {
+                Label("复制全部", systemImage: "doc.on.doc")
             }
-            .frame(minHeight: 64, maxHeight: 140)
-            .background(DS.row, in: RoundedRectangle(cornerRadius: DS.small, style: .continuous))
+            .buttonStyle(QuietButtonStyle())
+            .disabled(state.logLines.isEmpty)
+            BuildLogView(lines: state.logLines)
+                .frame(height: 200)
+                .background(DS.row)
+                .clipShape(RoundedRectangle(cornerRadius: DS.small, style: .continuous))
         }
     }
 
@@ -379,8 +467,8 @@ struct ContentView: View {
         panel.allowsMultipleSelection = false
         panel.prompt = "选择"
         if panel.runModal() == .OK, let url = panel.url {
-            state.gameDir = url.path
-            state.refreshPlan()
+            state.addGameFolder(url)
+            workspace = true
         }
     }
 
@@ -391,7 +479,7 @@ struct ContentView: View {
         panel.allowsMultipleSelection = false
         panel.prompt = "选择"
         if panel.runModal() == .OK, let url = panel.url {
-            state.keysPath = url.path
+            state.setKeys(url)
             state.refreshPlan()
         }
     }

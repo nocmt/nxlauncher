@@ -7,6 +7,8 @@ import SwiftUI
 final class LauncherState: ObservableObject {
     // --- what the user picked ---
     @Published var gameDir: String = ""
+    @Published var library: [LibraryGame] = []
+    @Published var selectedGameID: String?
     @Published var keysPath: String = ""
     @Published var exportDir: String = (NSHomeDirectory() as NSString).appendingPathComponent("Desktop")
     @Published var targetFPS: Int = 60
@@ -15,6 +17,10 @@ final class LauncherState: ObservableObject {
     // --- what the pipeline found ---
     @Published var plan: Plan?
     @Published var games: [GamesEntry] = []
+    @Published var dependencies: DependencyReport?
+    @Published var checkingDependencies = false
+    @Published var dependencyError = ""
+    @Published var showDependencies = false
 
     // --- the run ---
     @Published var busy: Bool = false
@@ -30,7 +36,7 @@ final class LauncherState: ObservableObject {
     @Published var noticeIsError: Bool = false
     /// The .app that "开始游戏" starts; its name is also the name of the support folder
     /// (env.txt, the saves), the way make-mac-app.sh builds it.
-    @Published var gameAppPath: String = UserDefaults.standard.string(forKey: "gameAppPath") ?? ""
+    @Published var gameAppPath: String = ""
 
     /// The operation mode: the handheld (720p, the Switch's touch screen exists) or the console
     /// (1080p, no touch screen -- as on the Switch, where the console is hooked up to a television).
@@ -101,24 +107,127 @@ final class LauncherState: ObservableObject {
     /// The folder the pipeline runs in: the repository (when the launcher runs from the sources),
     /// or the copy the app unpacked from the archive it carries.
     let home: URL
+    private let libraryStore: GameLibraryStore
+    private let supportRoot: URL
+    private var planRequest = 0
 
-    init() {
-        home = LauncherState.findHome()
-        // The window can be opened on a game folder from the command line:
-        //   NxLauncher --game-dir ~/Games/BotW --keys ~/keys/prod.keys
-        // --launch starts the game instead of showing the window (for a script or a test).
-        let args = CommandLine.arguments
+    init(defaults: UserDefaults = .standard, arguments: [String] = CommandLine.arguments,
+         home: URL? = nil, supportRoot: URL? = nil) {
+        self.home = home ?? LauncherState.findHome()
+        self.libraryStore = GameLibraryStore(defaults: defaults)
+        self.supportRoot = supportRoot ?? URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Application Support")
+        library = libraryStore.load()
+        keysPath = defaults.string(forKey: GameLibraryStore.keysKey) ?? ""
+        if let saved = defaults.string(forKey: GameLibraryStore.selectionKey),
+           let game = library.first(where: { $0.id == saved }) {
+            selectedGameID = game.id
+            gameDir = game.folder
+            gameAppPath = game.appPath
+        }
+        // No game-directory discovery: only saved references or an explicit --game-dir.
+        let args = arguments
         var i = 1
-        while i < args.count - 1 {
+        while i < args.count {
             switch args[i] {
-            case "--game-dir": gameDir = args[i + 1]; i += 2
-            case "--keys": keysPath = args[i + 1]; i += 2
-            case "--export-dir": exportDir = args[i + 1]; i += 2
-            case "--opmode": opModeArg = args[i + 1]; i += 2
+            case "--game-dir" where i + 1 < args.count:
+                gameDir = LibraryGame.canonicalPath(args[i + 1])
+                selectedGameID = nil
+                gameAppPath = ""
+                i += 2
+            case "--keys" where i + 1 < args.count:
+                setKeys(URL(fileURLWithPath: (args[i + 1] as NSString).expandingTildeInPath))
+                i += 2
+            case "--export-dir" where i + 1 < args.count: exportDir = args[i + 1]; i += 2
+            case "--opmode" where i + 1 < args.count: opModeArg = args[i + 1]; i += 2
             case "--launch": launchOnly = true; i += 1
             default: i += 1
             }
         }
+        loadEnv()
+    }
+
+    private var selectedGame: LibraryGame? {
+        library.first { $0.id == selectedGameID && $0.folder == LibraryGame.canonicalPath(gameDir) }
+    }
+
+    private func persistLibrary() {
+        libraryStore.save(library, selectedID: selectedGameID)
+    }
+
+    func addGameFolder(_ url: URL) {
+        guard !busy else { return }
+        let folder = LibraryGame.canonicalPath(url.path)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: folder, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            notify("请选择存在的游戏文件夹", isError: true)
+            return
+        }
+        if !library.contains(where: { $0.id == folder }) {
+            library.append(LibraryGame(folder: folder))
+        }
+        if let game = library.first(where: { $0.id == folder }) { selectGame(game) }
+    }
+
+    func selectGame(_ game: LibraryGame) {
+        guard !busy, let entry = library.first(where: { $0.id == game.id }) else { return }
+        if selectedGameID != entry.id || gameDir != entry.folder {
+            activateGame(entry)
+        } else {
+            persistLibrary()
+        }
+        refreshPlan()
+    }
+
+    func toggleGameSelection(_ game: LibraryGame) {
+        guard !busy, library.contains(where: { $0.id == game.id }) else { return }
+        if selectedGameID == game.id {
+            activateGame(nil)
+        } else {
+            selectGame(game)
+        }
+    }
+
+    private func activateGame(_ game: LibraryGame?) {
+        planRequest &+= 1
+        selectedGameID = game?.id
+        gameDir = game?.folder ?? ""
+        gameAppPath = game?.appPath ?? ""
+        plan = nil
+        logLines.removeAll()
+        stageName = ""
+        stepName = ""
+        fraction = nil
+        progressNote = ""
+        statusText = "就绪"
+        notice = ""
+        noticeIsError = false
+        toastToken &+= 1
+        toast = nil
+        toastIsWarning = false
+        loadEnv()
+        persistLibrary()
+    }
+
+    /// Removes the saved reference only: no game, export, save or support files are deleted.
+    func removeGame(_ game: LibraryGame) {
+        guard !busy, library.contains(where: { $0.id == game.id }) else { return }
+        library.removeAll { $0.id == game.id }
+        if selectedGameID == game.id {
+            activateGame(library.first)
+            if selectedGameID != nil { refreshPlan() }
+        } else { persistLibrary() }
+    }
+
+    func setKeys(_ url: URL) {
+        guard !busy else { return }
+        keysPath = url.standardizedFileURL.path
+        libraryStore.defaults.set(keysPath, forKey: GameLibraryStore.keysKey)
+    }
+
+    func revealGameFolder(_ game: LibraryGame) {
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: game.folder)
     }
 
     /// Start the game from the command line, without the window.
@@ -178,21 +287,21 @@ final class LauncherState: ObservableObject {
 
     /// The archive in the app bundle: the tools, the upstream tree, the Python wheels and a
     /// standalone Python, in one file. It is what makes the app shareable as a single file.
-    static func bundledArchive() -> URL? {
+    nonisolated static func bundledArchive() -> URL? {
         let resources = LauncherState.bundleResources()
         let archive = resources.appendingPathComponent("nxlauncher-home.tgz")
         return FileManager.default.fileExists(atPath: archive.path) ? archive : nil
     }
 
     /// The bundle's Resources folder (the launcher runs from inside an .app).
-    static func bundleResources() -> URL {
+    nonisolated static func bundleResources() -> URL {
         let exe = URL(fileURLWithPath: CommandLine.arguments.first ?? "").deletingLastPathComponent()
         return exe.deletingLastPathComponent().appendingPathComponent("Resources")
     }
 
     /// The cache folder: the app unpacks its archive here. Not in the bundle: the bundle can be
     /// read-only (in /Applications) and the build writes into the tree.
-    static var cacheDir: URL {
+    nonisolated static var cacheDir: URL {
         URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent("Library/Caches/NxLauncher")
     }
@@ -200,7 +309,7 @@ final class LauncherState: ObservableObject {
     /// Unpack the archive and get the Python ready. It happens once: the stamp says whether the
     /// cache is already the archive's contents. It moves about 130 MB, so it runs off the main
     /// thread.
-    static func unpackHome() throws {
+    nonisolated static func unpackHome() throws {
         guard let archive = bundledArchive() else { return }   // the sources: nothing to unpack
         let fm = FileManager.default
         let home = cacheDir.appendingPathComponent("home")
@@ -216,12 +325,18 @@ final class LauncherState: ObservableObject {
         // the Python's packages, from the wheels in the archive (no network)
         let libs = home.appendingPathComponent("py-libs")
         let python = home.appendingPathComponent("python/bin/python3")
-        if fm.fileExists(atPath: python.path),
-           !fm.fileExists(atPath: libs.appendingPathComponent("lz4").path) {
-            try? fm.createDirectory(at: libs, withIntermediateDirectories: true)
-            try run(python.path, ["-m", "pip", "install", "--quiet", "--no-index",
-                                  "--find-links", home.appendingPathComponent("wheels").path,
-                                  "--target", libs.path, "lz4", "capstone", "fonttools", "pillow"])
+        if fm.fileExists(atPath: python.path) {
+            var env = ProcessInfo.processInfo.environment
+            env["PYTHONPATH"] = libs.path
+            let packagesReady = (try? run(python.path, ["-c", "import lz4.block, capstone, fontTools, PIL; import compression.zstd"], env: env)) != nil
+                || (try? run(python.path, ["-c", "import lz4.block, capstone, fontTools, PIL, backports.zstd"], env: env)) != nil
+            if !packagesReady {
+                try? fm.createDirectory(at: libs, withIntermediateDirectories: true)
+                try run(python.path, ["-m", "pip", "install", "--quiet", "--no-index",
+                                      "--find-links", home.appendingPathComponent("wheels").path,
+                                      "--target", libs.path, "--upgrade", "--force-reinstall",
+                                      "lz4", "capstone", "fonttools", "pillow", "backports.zstd"], env: env)
+            }
         }
     }
 
@@ -245,17 +360,18 @@ final class LauncherState: ObservableObject {
     private var prepared = false
 
     /// A short description of a file, to tell one copy of the archive from another.
-    private static func fileStamp(of url: URL) -> String {
+    nonisolated private static func fileStamp(of url: URL) -> String {
         let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
         return "\(values?.fileSize ?? 0)-\(values?.contentModificationDate?.timeIntervalSince1970 ?? 0)"
     }
 
     /// Runs a tool and waits for it; it throws when the tool fails.
     @discardableResult
-    static func run(_ tool: String, _ args: [String]) throws -> String {
+    nonisolated static func run(_ tool: String, _ args: [String], env: [String: String]? = nil) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: tool)
         process.arguments = args
+        if let env { process.environment = env }
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
@@ -275,17 +391,52 @@ final class LauncherState: ObservableObject {
 
     // --- the plan ---
 
-    func refreshPlan() {
-        guard !gameDir.isEmpty else { plan = nil; return }
-        var args = ["plan", "--game-dir", gameDir]
+    func refreshPlan() { refreshPlan(deliverImmediately: false) }
+
+    private func refreshPlan(deliverImmediately: Bool) {
+        guard !busy else { return }
+        let folder = LibraryGame.canonicalPath(gameDir)
+        guard !folder.isEmpty else { planRequest &+= 1; plan = nil; return }
+        // An explicit command-line folder (or legacy UI assignment) becomes a reference here.
+        if selectedGame?.id != folder {
+            if !library.contains(where: { $0.id == folder }) {
+                library.append(LibraryGame(folder: folder))
+            }
+            activateGame(library.first { $0.id == folder })
+        }
+        planRequest &+= 1
+        let request = planRequest
+        plan = nil
+        statusText = "读取游戏文件夹中"
+        var args = ["plan", "--game-dir", folder]
         if !keysPath.isEmpty { args += ["--keys", keysPath] }
+        var immediateEvents: [PipelineEvent] = []
         do {
             try pipeline.run(args) { [weak self] event in
-                DispatchQueue.main.async { self?.handle(event) }
+                if deliverImmediately { immediateEvents.append(event) }
+                else {
+                    DispatchQueue.main.async {
+                        self?.handlePlanEvent(event, folder: folder, request: request)
+                    }
+                }
             }
+            for event in immediateEvents { handlePlanEvent(event, folder: folder, request: request) }
         } catch {
+            for event in immediateEvents { handlePlanEvent(event, folder: folder, request: request) }
+            guard selectedGameID == folder, gameDir == folder, planRequest == request else { return }
+            if let index = library.firstIndex(where: { $0.id == folder }) {
+                library[index].built = false
+                persistLibrary()
+            }
             statusText = "读取游戏文件夹失败：\(error.localizedDescription)"
         }
+    }
+
+    private func handlePlanEvent(_ event: PipelineEvent, folder: String, request: Int) {
+        guard !busy, selectedGameID == folder, gameDir == folder, planRequest == request else { return }
+        if case .plan(let value) = event, !value.gameDir.isEmpty,
+           LibraryGame.canonicalPath(value.gameDir) != folder { return }
+        handle(event)
     }
 
     func loadGames() {
@@ -298,19 +449,69 @@ final class LauncherState: ObservableObject {
         }
     }
 
+    func checkDependencies() {
+        guard !checkingDependencies else { return }
+        checkingDependencies = true
+        dependencies = nil
+        dependencyError = ""
+        let pipeline = self.pipeline
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var report: DependencyReport?
+            var failure = ""
+            do {
+                try pipeline.run(["doctor"]) { event in
+                    if case .dependencies(let value) = event {
+                        report = value
+                    } else if case .error(let message) = event {
+                        failure = message
+                    }
+                }
+                if report == nil && failure.isEmpty { failure = "依赖检查未返回结果，请重试。" }
+            } catch {
+                failure = "依赖检查失败：\(error.localizedDescription)"
+            }
+            Task { @MainActor in
+                self?.dependencies = failure.isEmpty ? report : nil
+                self?.dependencyError = failure
+                self?.showDependencies = report?.ready == false
+                self?.checkingDependencies = false
+            }
+        }
+    }
+
     private func handle(_ event: PipelineEvent) {
         switch event {
         case .plan(let p):
+            guard let game = selectedGame,
+                  p.gameDir.isEmpty || LibraryGame.canonicalPath(p.gameDir) == game.id else { return }
             plan = p
-            statusText = p.built ? "已就绪" : "尚未编译"
-            if gameAppPath.isEmpty || !FileManager.default.fileExists(atPath: gameAppPath) {
-                gameAppPath = findGameApp()?.path ?? ""
+            if !p.ok {
+                if let index = library.firstIndex(where: { $0.id == game.id }) {
+                    library[index].built = false
+                    persistLibrary()
+                }
+                statusText = p.error ?? "读取游戏文件夹失败"
+                return
             }
-            // Now that the .app (and with it the support folder) is known, read back what the
-            // game really runs with, so the window's picker shows the mode in effect.
+            statusText = p.base == nil ? "未找到基础游戏文件" : p.built ? "已就绪" : "尚未编译"
+            if let index = library.firstIndex(where: { $0.id == game.id }) {
+                if !p.name.isEmpty { library[index].name = p.name }
+                library[index].icon = p.icon
+                library[index].version = p.version
+                library[index].titleID = p.baseTitleID
+                library[index].built = p.built
+            }
+            migrateLegacyGameApp()
+            if let app = findGameApp() { setGameApp(app) }
+            else { gameAppPath = selectedGame?.appPath ?? "" }
+            persistLibrary()
             loadEnv()
         case .games(let g):
             games = g
+        case .dependencies(let report):
+            dependencies = report
+            dependencyError = ""
+            if !report.ready { showDependencies = true }
         case .stage(let name, let step):
             stageName = name
             stepName = step
@@ -354,13 +555,25 @@ final class LauncherState: ObservableObject {
     // --- the runs ---
 
     func startBuild() {
+        guard !busy, selectedGame != nil else { return }
+        guard !checkingDependencies else {
+            notify("正在检查编译环境，请稍候", isError: true)
+            return
+        }
+        if let dependencies, !dependencies.ready {
+            showDependencies = true
+            notify("缺少编译依赖，请在游戏库的「通用设置」中查看", isError: true)
+            return
+        }
         guard !gameDir.isEmpty, !keysPath.isEmpty else {
-            notify("先选游戏文件夹和主机密钥", isError: true)
+            notify(gameDir.isEmpty ? "请先选择游戏文件夹" : "请在游戏库的「通用设置」中选择 prod.keys", isError: true)
             return
         }
         // the values the background work needs are read here, on the main actor: the background
         // closure must not touch the state (it would be a data race)
         let dir = gameDir, keys = keysPath, pipeline = self.pipeline
+        let sourceID = selectedGameID
+        planRequest &+= 1
         busy = true
         statusText = "编译中"
         notice = ""
@@ -368,40 +581,49 @@ final class LauncherState: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
                 try pipeline.run(["build", "--game-dir", dir, "--keys", keys]) { event in
-                    Task { @MainActor in self?.handle(event) }
+                    Task { @MainActor in
+                        guard let self, self.selectedGameID == sourceID, self.gameDir == dir else { return }
+                        self.handle(event)
+                    }
                 }
                 Task { @MainActor in
-                    self?.notify("编译完成")
-                    self?.busy = false
-                    self?.refreshPlan()
+                    guard let self, self.selectedGameID == sourceID, self.gameDir == dir else { return }
+                    self.notify("编译完成")
+                    self.busy = false
+                    self.refreshPlan()
                 }
             } catch {
                 Task { @MainActor in
-                    self?.notify("编译失败：\(error.localizedDescription)", isError: true)
-                    self?.busy = false
+                    guard let self, self.selectedGameID == sourceID, self.gameDir == dir else { return }
+                    self.notify("编译失败：\(error.localizedDescription)", isError: true)
+                    self.busy = false
                 }
             }
         }
     }
 
     func exportMacApp() {
+        guard !busy, selectedGame != nil else { return }
         guard let plan, plan.built else { notify("还没有编译，先编译一次", isError: true); return }
         // the export is written from the work folder, so it is a new copy every time: ask where
         // it should go instead of keeping a directory in the settings
         guard let dir = askWhereToExport("把 .app 导出到这个文件夹") else { return }
         let out = URL(fileURLWithPath: dir).appendingPathComponent("\(supportName).app").path
-        let extra = ["--game", plan.baseTitleID, "--ver", plan.version,
+        var extra = ["--game", plan.baseTitleID, "--ver", plan.version,
                      "--work", plan.workDir, "--name", supportName,
-                     "--display", plan.name,
-                     "--dlc", dlcDir()].filter { !$0.isEmpty }
+                     "--display", plan.name]
+        let dlc = dlcDir()
+        if !dlc.isEmpty { extra += ["--dlc", dlc] }
         runExport(target: "mac-app", out: out, extra: extra)
     }
 
     func exportUnsignedIPA() {
+        guard !busy, selectedGame != nil else { return }
         guard let plan, plan.built else { statusText = "还没有编译，先编译一次"; return }
         guard let dir = askWhereToExport("把 IPA 导出到这个文件夹") else { return }
         let out = URL(fileURLWithPath: dir).appendingPathComponent("\(plan.name).ipa").path
-        runExport(target: "ios-ipa-unsigned", out: out, extra: ["--work", plan.workDir])
+        runExport(target: "ios-ipa-unsigned", out: out,
+                  extra: ["--game", plan.baseTitleID, "--ver", plan.version, "--work", plan.workDir])
     }
 
     /// Ask where to put the export (a folder chooser; the last one is the starting point).
@@ -420,24 +642,32 @@ final class LauncherState: ObservableObject {
     }
 
     private func runExport(target: String, out: String, extra: [String]) {
+        guard !busy, let sourceID = selectedGameID, selectedGame != nil else { return }
+        let sourceFolder = gameDir
         let pipeline = self.pipeline
+        planRequest &+= 1
         busy = true
         statusText = "导出中"
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
                 try pipeline.run(["export", "--target", target, "--out", out] + extra) { event in
-                    Task { @MainActor in self?.handle(event) }
+                    Task { @MainActor in
+                        guard let self, self.selectedGameID == sourceID, self.gameDir == sourceFolder else { return }
+                        self.handle(event)
+                    }
                 }
                 Task { @MainActor in
-                    // the exported .app is the one "开始游戏" starts from now on
-                    if target == "mac-app" { self?.setGameApp(URL(fileURLWithPath: out)) }
-                    self?.notify("导出完成：\(out)")
-                    self?.busy = false
+                    guard let self, self.selectedGameID == sourceID, self.gameDir == sourceFolder else { return }
+                    // Associate the exported app only with the captured source game.
+                    if target == "mac-app" { self.setGameApp(URL(fileURLWithPath: out)) }
+                    self.notify("导出完成：\(out)")
+                    self.busy = false
                 }
             } catch {
                 Task { @MainActor in
-                    self?.notify("导出失败：\(error.localizedDescription)", isError: true)
-                    self?.busy = false
+                    guard let self, self.selectedGameID == sourceID, self.gameDir == sourceFolder else { return }
+                    self.notify("导出失败：\(error.localizedDescription)", isError: true)
+                    self.busy = false
                 }
             }
         }
@@ -450,43 +680,71 @@ final class LauncherState: ObservableObject {
     /// written into that app's own support folder (the app's name is the folder's name), so the
     /// game really reads them.
     func launchGame() {
+        guard !busy, selectedGame != nil else { return }
         guard let plan, plan.built else { notify("还没有编译，先编译一次", isError: true); return }
         guard let app = findGameApp() else {
             notify("找不到已导出的 .app。导出目录：\(exportDir)；游戏文件夹：\(gameDir)。先点「导出 .app」，或把「导出目录」指到 .app 所在的文件夹。", isError: true)
             return
         }
         setGameApp(app)
+        if appliedSettings?.supportPath != supportDir.path { loadEnv() }
         writeEnv()
         NSWorkspace.shared.open(app)
         notify("已启动 \(app.lastPathComponent)")
     }
 
-    /// The .app to start: the one that was used last, then the export directory, then the game
-    /// folder (the .app is usually built next to the game files).
+    /// A remembered per-game export may be renamed. Discovery only accepts the exact expected
+    /// name: never enumerate arbitrary applications in a shared export folder.
     func findGameApp() -> URL? {
-        let fm = FileManager.default
-        var found: [URL] = []
-        if !gameAppPath.isEmpty, fm.fileExists(atPath: gameAppPath) {
-            found.append(URL(fileURLWithPath: gameAppPath))
-        }
-        var dirs = [exportDir, gameDir]
-        if let work = plan?.workDir { dirs.append((work as NSString).deletingLastPathComponent) }
-        for dir in dirs where !dir.isEmpty {
+        guard let game = selectedGame else { return nil }
+        if let remembered = existingApp(game.appPath) { return remembered }
+        guard !supportName.isEmpty, supportName != "nxnative" else { return nil }
+        for dir in appSearchDirectories {
             let named = URL(fileURLWithPath: dir).appendingPathComponent("\(supportName).app")
-            if fm.fileExists(atPath: named.path) { found.append(named) }
-            let items = ((try? fm.contentsOfDirectory(atPath: dir)) ?? []).sorted()
-            for item in items where item.hasSuffix(".app") {
-                let u = URL(fileURLWithPath: dir).appendingPathComponent(item)
-                if !found.contains(u) { found.append(u) }
-            }
+            if let app = existingApp(named.path) { return app }
         }
-        return found.first
+        return nil
     }
 
-    /// Remember the .app: its name is the name of the support folder (env.txt, the saves).
+    private var appSearchDirectories: [String] {
+        var dirs = [exportDir, gameDir]
+        if let work = plan?.workDir, !work.isEmpty {
+            dirs.append((work as NSString).deletingLastPathComponent)
+        }
+        return dirs.filter { !$0.isEmpty }
+    }
+
+    private func existingApp(_ path: String) -> URL? {
+        guard !path.isEmpty else { return nil }
+        let app = URL(fileURLWithPath: path).standardizedFileURL
+        var isDirectory: ObjCBool = false
+        guard app.pathExtension.lowercased() == "app",
+              FileManager.default.fileExists(atPath: app.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else { return nil }
+        return app
+    }
+
+    private func migrateLegacyGameApp() {
+        guard let game = selectedGame, game.appPath.isEmpty, let plan,
+              !plan.name.isEmpty,
+              let legacy = libraryStore.defaults.string(forKey: "gameAppPath"),
+              let app = existingApp(legacy),
+              app.lastPathComponent == "\(plan.name).app",
+              appSearchDirectories.contains(where: {
+                  LibraryGame.canonicalPath($0) == LibraryGame.canonicalPath(app.deletingLastPathComponent().path)
+              }) else { return }
+        // The exact expected application in a known location demonstrates the association.
+        setGameApp(app)
+        libraryStore.defaults.removeObject(forKey: "gameAppPath")
+    }
+
+    /// Remember this game's export only; a global last-app pointer is unsafe across games.
     private func setGameApp(_ app: URL) {
-        gameAppPath = app.path
-        UserDefaults.standard.set(app.path, forKey: "gameAppPath")
+        guard let game = selectedGame,
+              let index = library.firstIndex(where: { $0.id == game.id }) else { return }
+        gameAppPath = app.standardizedFileURL.path
+        library[index].appPath = gameAppPath
+        persistLibrary()
     }
 
     /// Start the game from the command line, without the window:
@@ -494,7 +752,7 @@ final class LauncherState: ObservableObject {
     /// It prints where everything went, so a script (or a test) can see it.
     static func runLaunchFromCommandLine() {
         let state = LauncherState()
-        state.refreshPlan()
+        state.refreshPlan(deliverImmediately: true)
         guard let app = state.findGameApp() else {
             print("no .app found (export dir: \(state.exportDir), game dir: \(state.gameDir))")
             return
@@ -518,7 +776,7 @@ final class LauncherState: ObservableObject {
             return
         }
         // the support folder depends on the .app that is started, so find it first
-        state.refreshPlan()
+        state.refreshPlan(deliverImmediately: true)
         if let app = state.findGameApp() { state.setGameApp(app) }
         state.loadEnv()
         print("mode: \(mode.rawValue) (DM_OPMODE=\(mode.code), DM_MOUSE_PAD=\(mode.mouseConfirms ? 1 : 0))")
@@ -535,17 +793,15 @@ final class LauncherState: ObservableObject {
 
     /// The Application Support folder the Mac app uses (saves, log.txt, env.txt).
     var supportDir: URL {
-        URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent("Library/Application Support")
-            .appendingPathComponent(appSupportName)
+        supportRoot.appendingPathComponent(appSupportName)
     }
 
     /// The name of the support folder: the name of the .app that is started (make-mac-app.sh
     /// builds the app and its support folder with the same name). Before an app is known, the
     /// game's own name.
     var appSupportName: String {
-        if !gameAppPath.isEmpty {
-            let name = (gameAppPath as NSString).lastPathComponent
+        if let path = selectedGame?.appPath, !path.isEmpty {
+            let name = (path as NSString).lastPathComponent
             return name.hasSuffix(".app") ? String(name.dropLast(4)) : name
         }
         return supportName
@@ -553,6 +809,7 @@ final class LauncherState: ObservableObject {
 
     var supportName: String {
         if let n = plan?.name, !n.isEmpty { return n }
+        if let game = selectedGame, !game.titleID.isEmpty, !game.name.isEmpty { return game.name }
         return "nxnative"
     }
 
@@ -568,9 +825,28 @@ final class LauncherState: ObservableObject {
     /// The lines the launcher owns (the frame rate, the language, the operation mode and the
     /// mouse scheme) are rewritten; every other line is kept. Overwriting the whole file would
     /// silently drop what the user added by hand (DM_PADMAP, DM_AUDIO, ...).
-    func writeEnv() {
+    private var hasRuntimeContext: Bool {
+        guard selectedGame != nil else { return false }
+        return !(selectedGame?.appPath ?? "").isEmpty || supportName != "nxnative"
+    }
+
+    private struct RuntimeSettings: Equatable {
+        var gameID: String?
+        var supportPath: String
+        var fps: Int
+        var language: Language
+        var mode: OpMode
+    }
+    private var appliedSettings: RuntimeSettings?
+    private var runtimeSettings: RuntimeSettings {
+        RuntimeSettings(gameID: selectedGameID, supportPath: supportDir.path,
+                        fps: targetFPS, language: language, mode: opMode)
+    }
+
+    @discardableResult
+    func writeEnv() -> Bool {
+        guard hasRuntimeContext else { return false }
         let dir = supportDir
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let file = dir.appendingPathComponent("env.txt")
         var kept: [String] = []
         var hasAudio = false
@@ -598,50 +874,75 @@ final class LauncherState: ObservableObject {
         lines.append("DM_MOUSE_PAD=\(opMode.mouseConfirms ? 1 : 0)")
         lines.append(contentsOf: kept)
         let text = lines.joined(separator: "\n") + "\n"
-        try? text.write(to: file, atomically: true, encoding: .utf8)
-        appliedOpMode = opMode
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try text.write(to: file, atomically: true, encoding: .utf8)
+        } catch {
+            notify("写入游戏设置失败：\(error.localizedDescription)", isError: true)
+            return false
+        }
+        appliedSettings = runtimeSettings
         notify("设置已写入 \(appSupportName)/env.txt")
+        return true
     }
 
-    /// The mode that was last written to env.txt. The window's picker only applies a change when
-    /// it really differs from this, so reading the file back is not mistaken for a user change.
-    private var appliedOpMode: OpMode?
-
-    /// Read the settings the game reads back (the operation mode), so the window shows what is
-    /// really in effect.
+    /// A read resets every picker, even if this game's env is absent, and records the complete
+    /// applied snapshot. Deferred SwiftUI onChange callbacks therefore remain read-only.
     func loadEnv() {
-        let file = supportDir.appendingPathComponent("env.txt")
-        guard let data = try? Data(contentsOf: file), let old = String(data: data, encoding: .utf8) else { return }
-        for raw in old.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = raw.trimmingCharacters(in: .whitespaces)
-            if line.hasPrefix("DM_OPMODE=") {
-                let v = Int(line.dropFirst("DM_OPMODE=".count)) ?? 0
-                opMode = v == 0 ? .handheld : .console
-                appliedOpMode = opMode
+        var fps = 60
+        var lang: Language = .system
+        var mode: OpMode = .handheld
+        if hasRuntimeContext,
+           let old = try? String(contentsOf: supportDir.appendingPathComponent("env.txt"), encoding: .utf8) {
+            for raw in old.split(separator: "\n") {
+                let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !line.hasPrefix("#") else { continue }
+                let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                guard parts.count == 2 else { continue }
+                let key = parts[0].trimmingCharacters(in: .whitespaces)
+                let value = parts[1].trimmingCharacters(in: .whitespaces)
+                switch key {
+                case "DM_FPS_TARGET": if let parsed = Int(value), parsed > 0 { fps = parsed }
+                case "DM_LANG":
+                    lang = value == "zh-Hans" ? .zhHans : value == "en-US" ? .enUS : .system
+                case "DM_OPMODE": mode = value == "1" ? .console : .handheld
+                default: break
+                }
             }
         }
+        targetFPS = fps
+        language = lang
+        opMode = mode
+        appliedSettings = runtimeSettings
     }
 
-    /// The operation mode was changed in the window: write it and say what it means.
-    func opModeChanged() {
-        // The read-back (loadEnv) also publishes the mode; that is not a user change, so it must
-        // not write the file again nor raise a toast.
-        guard appliedOpMode != opMode else { return }
-        setOpMode(opMode)
+    /// UI API: call for FPS, language AND operation-mode onChange. Reads do not write, including
+    /// delayed onChange delivery after a game switch or plan refresh.
+    func runtimeSettingsChanged() {
+        guard !busy, hasRuntimeContext, appliedSettings != runtimeSettings else { return }
+        let modeChanged = appliedSettings?.mode != opMode
+        guard writeEnv() else { return }
+        if modeChanged { showModeToast(opMode) }
     }
 
-    /// Put the mode into effect: write env.txt and say what it means.
+    func opModeChanged() { runtimeSettingsChanged() }
+
     @discardableResult
     func setOpMode(_ mode: OpMode) -> String {
-        let changed = appliedOpMode != mode
         opMode = mode
-        writeEnv()
-        let text = mode == .console
+        runtimeSettingsChanged()
+        return modeMessage(mode)
+    }
+
+    private func modeMessage(_ mode: OpMode) -> String {
+        mode == .console
             ? "已切换到主机模式：游戏按 1920×1080 渲染（窗口大于 1280×720 时更清晰）。"
               + "Switch 主机没有触摸屏，所以鼠标左键的点击确认不可用，请用键盘（方向键选择、J 确认）或手柄。下次启动生效。"
             : "已切换到掌机模式：游戏按 1280×720 渲染（与窗口 1:1，文字最锐），鼠标左键 = 确认键。下次启动生效。"
-        if changed { showToast(text, warning: mode == .console) }
-        return text
+    }
+
+    private func showModeToast(_ mode: OpMode) {
+        showToast(modeMessage(mode), warning: mode == .console)
     }
 
     /// A message that floats over the window for a few seconds.

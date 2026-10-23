@@ -13,7 +13,22 @@ enum PipelineEvent {
     case log(String)
     case plan(Plan)
     case games([GamesEntry])
+    case dependencies(DependencyReport)
     case error(String)
+}
+
+struct DependencyCheck: Decodable, Identifiable {
+    let id: String
+    let name: String
+    let ok: Bool
+    let detail: String
+    let hint: String
+}
+
+struct DependencyReport: Decodable {
+    let ready: Bool
+    let checks: [DependencyCheck]
+    let commands: [String]
 }
 
 struct GamesEntry: Decodable, Identifiable {
@@ -61,6 +76,11 @@ func decodeEvent(_ line: String) -> PipelineEvent? {
             return .games(arr)
         }
         return nil
+    case "dependencies":
+        if let report = try? JSONDecoder().decode(DependencyReport.self, from: Data(line.utf8)) {
+            return .dependencies(report)
+        }
+        return nil
     case "error":
         return .error(str("message"))
     default:
@@ -72,7 +92,20 @@ func decodeEvent(_ line: String) -> PipelineEvent? {
 /// It holds no mutable state (the process is local to run()), so it is safe to hand to a background
 /// queue.
 final class Pipeline: @unchecked Sendable {
-    enum Failure: Error { case cannotRun(String), exited(Int) }
+    enum Failure: LocalizedError {
+        case cannotRun(String)
+        case exited(Int, String?)
+
+        var errorDescription: String? {
+            switch self {
+            case .cannotRun(let message):
+                return "Cannot run pipeline: \(message)"
+            case .exited(let code, let diagnostic):
+                let message = "Pipeline exited with status \(code)"
+                return diagnostic.map { "\(message): \($0)" } ?? message
+            }
+        }
+    }
 
     private let toolsDir: URL
     /// The interpreter to run the script with; nil = the system's python3.
@@ -110,14 +143,42 @@ final class Pipeline: @unchecked Sendable {
         process.standardError = pipe
 
         var buffer = Data()
+        var lastError: String?
+        var recentOutput: [String] = []
+
+        func consumeLine(_ data: Data) {
+            let line = String(decoding: data, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { return }
+            let event = decodeEvent(line) ?? .log(line)
+            var diagnostic: String?
+            switch event {
+            case .error(let message):
+                if !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    lastError = message
+                }
+            case .log(let message), .say(let message):
+                diagnostic = message
+            case .stageEnd(_, false, let summary):
+                diagnostic = summary
+            default:
+                break
+            }
+            if let diagnostic, !diagnostic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                recentOutput.append(diagnostic)
+                if recentOutput.count > 10 { recentOutput.removeFirst() }
+            }
+            onEvent(event)
+        }
+
         let group = DispatchGroup()
         group.enter()
-        var exitCode: Int32 = 0
 
         pipe.fileHandleForReading.readabilityHandler = { handle in
             let chunk = handle.availableData
             if chunk.isEmpty {
                 handle.readabilityHandler = nil
+                if !buffer.isEmpty { consumeLine(buffer) }
                 group.leave()
                 return
             }
@@ -125,22 +186,23 @@ final class Pipeline: @unchecked Sendable {
             while let idx = buffer.firstIndex(of: 0x0A) {
                 let lineData = buffer.subdata(in: buffer.startIndex..<idx)
                 buffer.removeSubrange(buffer.startIndex...idx)
-                guard let line = String(data: lineData, encoding: .utf8) else { continue }
-                let trimmed = line.trimmingCharacters(in: .whitespaces)
-                if trimmed.isEmpty { continue }
-                if let e = decodeEvent(trimmed) { onEvent(e) } else { onEvent(.log(trimmed)) }
+                consumeLine(lineData)
             }
         }
 
         do {
             try process.run()
         } catch {
+            pipe.fileHandleForReading.readabilityHandler = nil
             group.leave()
             throw Failure.cannotRun(error.localizedDescription)
         }
         group.wait()
         process.waitUntilExit()
-        exitCode = process.terminationStatus
-        if exitCode != 0 { throw Failure.exited(Int(exitCode)) }
+        let exitCode = process.terminationStatus
+        if exitCode != 0 {
+            let diagnostic = lastError ?? (recentOutput.isEmpty ? nil : recentOutput.joined(separator: "\n"))
+            throw Failure.exited(Int(exitCode), diagnostic)
+        }
     }
 }

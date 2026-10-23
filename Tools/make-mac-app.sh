@@ -18,7 +18,7 @@
 #   --game        the base game's title ID (the profile's folder name in dm/games/)
 #   --work        the work folder: <id>_build (extract/, patched_<ver>/, shader/cache/)
 #   --ver         the packed version, e.g. v1114112 (the folder names under extract/ and patched_*)
-#   --out         the .app to write (the folder is replaced)
+#   --out         the .app to write (must not already exist)
 #   --name        the bundle name (default: the profile's ipa base name, e.g. "BotW Native")
 #   --display     the name in the menu bar and the window title (default: the profile's name)
 #   --bundle-id   the bundle identifier (default: org.nxnative.<title id in lowercase>.mac)
@@ -26,7 +26,7 @@
 #   --support     the Application Support folder (default: the bundle name); saves and log.txt live there
 #   --mem-pool    the memory the game is told it has (default: the profile's app_pool)
 #   --mem-reserve the address space reserved for it (default: the profile's mem_reserve)
-set -u
+set -eu
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/.." && pwd)
@@ -55,10 +55,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$GAME" ] && [ -n "$WORK" ] && [ -n "$VER" ] && [ -n "$OUT" ] || fail "--game, --work, --ver and --out are required"
-[ -d "$REPO/dm/games/$GAME" ] || fail "no profile for $GAME (dm/games/$GAME)"
-
-PROF=$REPO/dm/games/$GAME
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+export DM_GAMES_DIR="${DM_GAMES_DIR:+$DM_GAMES_DIR:}$WORK/profile"
+PROF=$(python3 "$REPO/dm/games/game.py" dir "$GAME") || fail "no profile for $GAME (including $WORK/profile)"
+[ -f "$PROF/game.tsv" ] || fail "no profile at $PROF/game.tsv"
 
 # A Python with PIL (the .icns is written by hand, because sips cannot write to the sandboxed TMPDIR).
 # NXLAUNCHER_PYTHON is the launcher's own Python (the app carries one); its packages are on the
@@ -94,7 +94,7 @@ echo "game   : $GAME ($GAME_NAME $GAME_VERSION)"
 echo "work   : $WORK"
 echo "app    : $OUT"
 
-rm -rf "$OUT"
+[ ! -e "$OUT" ] || fail "output already exists: $OUT"
 mkdir -p "$OUT/Contents/MacOS" "$RES/dm" "$RES/font" "$RES/msl"
 
 # --- the host ---
@@ -115,7 +115,7 @@ echo "    $(ls "$RES/patched" | wc -l | tr -d ' ') files"
 
 # --- the shader tables (the host looks for them beside DM_NVN_SHMAP) ---
 echo "[3] the shader tables ..."
-for t in shader_map.tsv pso_manifest.tsv c1_full.tsv; do
+for t in shader_map.tsv pso_manifest.tsv c1_full.tsv cb_extent.tsv; do
   [ -f "$PROF/$t" ] && cp "$PROF/$t" "$RES/dm/" || echo "    (no $t in the profile)"
 done
 

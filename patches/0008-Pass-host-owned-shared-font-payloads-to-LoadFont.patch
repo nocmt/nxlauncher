@@ -1,0 +1,179 @@
+From 951d6ff918dfd68dbdcb76dac6e2eaf0a191eb45 Mon Sep 17 00:00:00 2001
+From: seedds <seedds@gmail.com>
+Date: Thu, 22 Oct 2026 18:38:55 +0800
+Subject: [PATCH 8/9] Shared fonts: pass host-owned TTF payloads to LoadFont
+
+Temporary local carry of 951d6ff918dfd68dbdcb76dac6e2eaf0a191eb45.
+Upstream PR #55 is pending: https://github.com/seedds/nxnative/pull/55
+Rebased onto 677345b plus the six maintained launcher patches; retain
+their host test targets. Remove this patch once the pinned upstream
+baseline includes the font repair. No font files or game assets included.
+
+---
+ dm/host/hle_sdk16.c           | 26 ++++++++++++--
+ dm/host/tests/Makefile        |  5 ++-
+ dm/host/tests/t_shared_font.c | 81 +++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 108 insertions(+), 4 deletions(-)
+
+diff --git a/dm/host/hle_sdk16.c b/dm/host/hle_sdk16.c
+index 7c4d63051fde71c4f3a8998f7df4878b81e1087e..f8b6635deaf91a80adada37ff54b2fb7e29b6d89 100644
+--- a/dm/host/hle_sdk16.c
++++ b/dm/host/hle_sdk16.c
+@@ -82,17 +82,37 @@ static font_t font_first(const char *env, const char *file, const char *fallback
+     }
+     return (font_t){0};
+ }
++static pthread_mutex_t font_mu = PTHREAD_MUTEX_INITIALIZER;
++static font_t std_f, ext_f;
+ static font_t font_get(int type) {
+-    static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER; static font_t std_f, ext_f; static int std_done, ext_done;
+-    pthread_mutex_lock(&mu);
++    static int std_done, ext_done;
++    pthread_mutex_lock(&font_mu);
+     if (!std_done) { std_done = 1; std_f = font_first("DM_SHARED_FONT", "standard.ttf", "/System/Library/Fonts/Supplemental/Arial Unicode.ttf");
+                      if (!std_f.p) LOG("[RED] cannot open the standard shared font (point DM_SHARED_FONT or DM_FONT_DIR/standard.ttf at a TTF)"); }
+     if (type == 5 && !ext_done) { ext_done = 1; ext_f = font_first("DM_SHARED_FONT_EXT", "nintendo_ext.ttf", NULL);
+                                   if (!ext_f.p) LOG("[YELLOW] Nintendo extended shared font missing (dm/tools/make_ext_font.py generates nintendo_ext.ttf): button icons will be drawn as '?'"); }
+     font_t f = type == 5 && ext_f.p ? ext_f : std_f;
+-    pthread_mutex_unlock(&mu);
++    pthread_mutex_unlock(&font_mu);
+     return f;
+ }
++// LoadFont needs the TTF even when a game imports Decode but skips it for shared fonts.
++// Only the host's own BFTTF allocation bases qualify; decoded pointers and game-owned data pass through.
++static const void *font_payload(const void *p) {
++    pthread_mutex_lock(&font_mu);
++    const void *r = p && (p == std_f.p || p == ext_f.p) ? (const uint8_t *)p + 8 : p;
++    pthread_mutex_unlock(&font_mu);
++    return r;
++}
++static uint32_t (*font_load)(void *, char *, const void *, unsigned, unsigned);
++static pthread_once_t font_load_once = PTHREAD_ONCE_INIT;
++static void font_load_init(void) {
++    font_load = guest_sym("_ZN2nn6fontll18ScalableFontEngine8LoadFontEPcPKvjj");
++    if (!font_load) die("ScalableFontEngine::LoadFont not found in the guest");
++}
++HLE_FORCE("_ZN2nn6fontll18ScalableFontEngine8LoadFontEPcPKvjj", "shared font BFTTF allocation base → TTF payload; parsing and errors stay in the SDK", uint32_t, h_font_LoadFont, void *self, char *name, const void *data, unsigned index, unsigned capacity) {
++    pthread_once(&font_load_once, font_load_init);
++    return font_load(self, name, font_payload(data), index, capacity);
++}
+ // The address points straight at the TTF (past the 8-byte header) and the size excludes the header, except for a game on SDK 11 or later whose main imports ScalableFontEngineHelper::Decode
+ //   (dm_sdk_major, dm_main_imports; the profile's shared_font overrides). Super Mario 3D World + Bowser's Fury (SDK 10) records shared fonts as type 0 (main+0x975658), calls no Decode and hands the address
+ //   as is to ScalableFontEngine::LoadFont; with the header LoadFont fails with error 403 and SetFont with 301, every lookup of the "?" glyph then misses, and main+0x6c73c0 crashes on a null pointer.
+diff --git a/dm/host/tests/Makefile b/dm/host/tests/Makefile
+index 5529b5cee13887546e2e45ddb58a76839666af30..d0bb7755ce1125f9eca21da727127303537615f8 100644
+--- a/dm/host/tests/Makefile
++++ b/dm/host/tests/Makefile
+@@ -4,7 +4,7 @@ B = build
+ # tests that use the game profile need GAME=<base game title ID> (there is no default game); GINC only expands when used, so tests without the profile build as before
+ GINC = $(if $(strip $(GAME)),-I../gen/$(GAME) -I../../games/$(GAME),$(error GAME is not set: make GAME=<base game title ID>: $(shell python3 ../../games/game.py list | awk -F'\t' '{printf "%s (%s)  ", $$1, $$3}')))
+ GAME_H = ../gen/$(GAME)/game_profile.h
+-run: $(B)/t_language $(B)/t_mem_config $(B)/t_padmap $(B)/t_touch $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_pctl $(B)/t_time
++run: $(B)/t_language $(B)/t_mem_config $(B)/t_padmap $(B)/t_touch $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_pctl $(B)/t_time $(B)/t_shared_font
+ 	$(B)/t_language
+ 	$(B)/t_mem_config
+ 	$(B)/t_padmap
+@@ -22,6 +22,7 @@ run: $(B)/t_language $(B)/t_mem_config $(B)/t_padmap $(B)/t_touch $(B)/t_oe $(B)
+ 	$(B)/t_condvar_old
+ 	$(B)/t_pctl
+ 	$(B)/t_time
++	$(B)/t_shared_font
+ $(B)/t_language: t_language.c t_oe.c ../hle_oe.c ../hle.h ../dm.h $(GAME_H) | $(B)
+ 	clang -O1 -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_language.c -framework CoreFoundation
+ $(B)/t_mem_config: t_mem_config.c ../dm_mem_config.h | $(B)
+@@ -52,6 +53,8 @@ $(B)/t_altstack: t_altstack.c t_altstack_stub.c ../crash.c ../dm.h $(GAME_H) | $
+ 	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_altstack.c t_altstack_stub.c ../crash.c
+ $(B)/t_pctl: t_pctl.c ../hle_misc.c ../hle.h ../dm.h $(GAME_H) | $(B)
+ 	clang -O1 -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_pctl.c
++$(B)/t_shared_font: t_shared_font.c ../hle_sdk16.c ../hle.h ../dm.h $(GAME_H) | $(B)
++	clang -O1 -Wall -Werror -Wno-unused-function -Wno-frame-address -I.. $(GINC) -o $@ t_shared_font.c
+ $(B)/t_time: t_time.c ../hle_time.c ../hle.h ../dm.h $(GAME_H) | $(B)
+ 	clang -O1 -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_time.c
+ $(B)/t_oe: t_oe.c ../hle_oe.c ../hle.h ../dm.h $(GAME_H) | $(B)
+diff --git a/dm/host/tests/t_shared_font.c b/dm/host/tests/t_shared_font.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..ff7af21691275ea2025eaa7b58fece69340224e0
+--- /dev/null
++++ b/dm/host/tests/t_shared_font.c
+@@ -0,0 +1,81 @@
++// Shared-font ownership and LoadFont forwarding through the real forced registration; no game module or font file is needed.
++#include "../hle_sdk16.c"
++#include <mach-o/getsect.h>
++#include <sys/wait.h>
++#include <sys/resource.h>
++
++static int checks, fails, calls, lookups, missing;
++static void *seen_self;
++static char *seen_name;
++static const void *seen_data;
++static unsigned seen_index, seen_capacity;
++static uint32_t status;
++#define CHECK(c, msg) do { checks++; if (!(c)) { fails++; fprintf(stderr, "FAIL: %s\n", msg); } } while (0)
++static uint32_t original(void *self, char *name, const void *data, unsigned index, unsigned capacity) {
++    calls++; seen_self = self; seen_name = name; seen_data = data;
++    seen_index = index; seen_capacity = capacity;
++    return status;
++}
++void *guest_sym(const char *name) {
++    lookups++;
++    CHECK(!strcmp(name, "_ZN2nn6fontll18ScalableFontEngine8LoadFontEPcPKvjj"), "original symbol lookup");
++    return missing ? NULL : original;
++}
++module_t g_mod[MAX_MOD];
++int g_nmod;
++uint64_t g_t0_ns;
++uint64_t now_ns(void) { return 0; }
++int dm_sdk_major(void) { return 20; }
++int dm_main_imports(const char *prefix) { (void)prefix; return 1; }
++module_t *module_of(const void *p) { (void)p; return NULL; }
++void dm_backtrace(uint64_t fp) { (void)fp; }
++void hle_bind_system_event(void *ev, int autoclear) { (void)ev; (void)autoclear; }
++void hle_signal_system_event(void *ev) { (void)ev; }
++uint32_t hle_hid_connected_npad(void) { return 0; }
++void dm_host_helper_qos(qos_class_t q) { (void)q; }
++extern const struct mach_header_64 _mh_execute_header;
++int main(void) {
++    unsigned long bytes = 0;
++    const hle_force_ent *e = (const hle_force_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swforce", &bytes);
++    uint32_t (*load)(void *, char *, const void *, unsigned, unsigned) = NULL;
++    unsigned count = 0;
++    for (size_t i = 0; e && i < bytes / sizeof *e; i++) {
++        if (strcmp(e[i].name, "_ZN2nn6fontll18ScalableFontEngine8LoadFontEPcPKvjj")) continue;
++        load = e[i].fn; count++;
++        CHECK(e[i].why && e[i].why[0], "takeover has a reason");
++    }
++    CHECK(count == 1 && load, "exact LoadFont forced registration exists once");
++    if (!load) return 1;
++    // A missing SDK implementation must fail loudly rather than fabricate a successful font load.
++    pid_t child = fork();
++    CHECK(child >= 0, "missing-original child starts");
++    if (!child) { struct rlimit r = {0, 0}; setrlimit(RLIMIT_CORE, &r); missing = 1; load(NULL, NULL, NULL, 0, 0); _exit(1); }
++    if (child > 0) { int s; waitpid(child, &s, 0); CHECK(WIFSIGNALED(s) && WTERMSIG(s) == SIGABRT, "missing original aborts"); }
++    uint8_t standard[64] = {0}, extension[64] = {0}, unrelated[64] = {0};
++    uint32_t marker = 0x18029a7fu;
++    memcpy(standard, &marker, 4); memcpy(extension, &marker, 4); memcpy(unrelated, &marker, 4);
++    char name[50] = {0}; int self;
++    const void *before[] = {NULL, unrelated, standard, extension};
++    for (unsigned i = 0; i < sizeof before / sizeof *before; i++) {
++        status = 403; int n = calls;
++        CHECK(load(&self, name, before[i], 17, sizeof name) == status, "uninitialized fonts preserve result");
++        CHECK(calls == n + 1 && seen_data == before[i], "uninitialized fonts leave all data unchanged");
++    }
++    std_f = (font_t){standard, sizeof standard}; ext_f = (font_t){extension, sizeof extension};
++    const void *input[] = {standard, extension, standard + 8, extension + 8, standard + 1, extension + 9, unrelated, NULL};
++    const void *expect[] = {standard + 8, extension + 8, standard + 8, extension + 8, standard + 1, extension + 9, unrelated, NULL};
++    const uint32_t results[] = {0, 403, 301, 0x80000001u, ~0u};
++    for (unsigned r = 0; r < sizeof results / sizeof *results; r++) for (unsigned i = 0; i < sizeof input / sizeof *input; i++) {
++        int n = calls; status = results[r];
++        CHECK(load(&self, name, input[i], ~0u, sizeof name) == status, "SDK status preserved");
++        CHECK(calls == n + 1 && seen_data == expect[i], "only exact host bases skip the header, once");
++        CHECK(seen_self == &self && seen_name == name && seen_index == ~0u && seen_capacity == sizeof name, "all other arguments preserved");
++    }
++    ext_f = std_f;
++    CHECK(load(&self, name, standard, 0, 0) == status && seen_data == standard + 8, "extension fallback to standard");
++    CHECK(seen_index == 0 && seen_capacity == 0, "zero unsigned arguments preserved");
++    CHECK(lookups == 1, "original resolved once");
++    CHECK(!memcmp(standard, unrelated, sizeof standard) && !memcmp(extension, unrelated, sizeof extension), "input bytes unchanged");
++    printf("shared font: %d checks, %d failed\n", checks, fails);
++    return fails != 0;
++}

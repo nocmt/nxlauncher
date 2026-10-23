@@ -6,17 +6,8 @@ Subject: [PATCH 4/6] Validate explicit guest memory overrides and restore
 
 Read DM_MEM_RESERVE, DM_MEM_POOL and DM_MEM_ALIAS once at initialization. Reject partial, signed, zero and overflowing values; check host-page alignment and prefix/alias/stack bounds before subtraction or pointer arithmetic. Preserve every profile default and upstream alias accounting including mem_map_limit. iOS defaults do not grow. Test malformed values, overflow, alignment and empty/underflowing heaps.
 ---
- dm/host/Makefile             |  2 +-
- dm/host/dm_mem_config.h      | 24 +++++++++++++++++++
- dm/host/hle_svc.c            | 45 ++++++++++++++++++++++++++----------
- dm/host/tests/Makefile       |  5 +++-
- dm/host/tests/t_mem_config.c | 19 +++++++++++++++
- 5 files changed, 81 insertions(+), 14 deletions(-)
- create mode 100644 dm/host/dm_mem_config.h
- create mode 100644 dm/host/tests/t_mem_config.c
-
 diff --git a/dm/host/Makefile b/dm/host/Makefile
-index 68c4510..601ab01 100644
+index 68c451065e03bdfed70134902ce87612464f503a..601ab01434c32082757ad13785709fb48000639a 100644
 --- a/dm/host/Makefile
 +++ b/dm/host/Makefile
 @@ -50,7 +50,7 @@ endif
@@ -30,7 +21,7 @@ index 68c4510..601ab01 100644
  	rm -rf gen dmhost dmhost_* *.dSYM
 diff --git a/dm/host/dm_mem_config.h b/dm/host/dm_mem_config.h
 new file mode 100644
-index 0000000..7bded6e
+index 0000000000000000000000000000000000000000..7bded6ebd98ce361d5732f214126ea24b5a8d0a7
 --- /dev/null
 +++ b/dm/host/dm_mem_config.h
 @@ -0,0 +1,24 @@
@@ -59,7 +50,7 @@ index 0000000..7bded6e
 +    return 1;
 +}
 diff --git a/dm/host/hle_svc.c b/dm/host/hle_svc.c
-index 6f1d9df..3d98ac8 100644
+index 6f1d9df577eef735748b70bd1e0bc710ab5f4cda..3d98ac8d95394916cfebf1526e3029b77f0e030c 100644
 --- a/dm/host/hle_svc.c
 +++ b/dm/host/hle_svc.c
 @@ -3,6 +3,7 @@
@@ -183,7 +174,7 @@ index 6f1d9df..3d98ac8 100644
          case I_TotalMem: case I_TotalNonSys: v = APP_POOL; break;
          case I_UsedMem:  case I_UsedNonSys:  v = g_heap_cur + DM_GAME_MEM_USED + big_bss_bytes();   // profile mem_used, 64 MB unless the game needs more (see mem_used in dm/games/README.md)
 diff --git a/dm/host/tests/Makefile b/dm/host/tests/Makefile
-index 96ee822..e6453fc 100644
+index 96ee8223b168cf57db7c5f894e08fa7dbb2180cc..e6453fce4f7603d2a4047fb5ad2e6dd5812a67d4 100644
 --- a/dm/host/tests/Makefile
 +++ b/dm/host/tests/Makefile
 @@ -4,7 +4,8 @@ B = build
@@ -207,7 +198,7 @@ index 96ee822..e6453fc 100644
  $(GAME_H):
 diff --git a/dm/host/tests/t_mem_config.c b/dm/host/tests/t_mem_config.c
 new file mode 100644
-index 0000000..790d5fd
+index 0000000000000000000000000000000000000000..790d5fd7782691bbbf886cc2f781f9729a2d27e9
 --- /dev/null
 +++ b/dm/host/tests/t_mem_config.c
 @@ -0,0 +1,19 @@

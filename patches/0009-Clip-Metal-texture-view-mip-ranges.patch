@@ -1,0 +1,113 @@
+From: NxLauncher maintainers
+Date: Thu, 22 Oct 2026 20:00:00 +0800
+Subject: [PATCH 9/9] Clip Metal texture view mip ranges to available levels
+
+Temporary local carry of the verified repair from
+nxnative-echoes-fix-20261022 at 951d6ff918dfd68dbdcb76dac6e2eaf0a191eb45.
+Reject a base outside the texture and clip the requested count to the
+remaining levels. Include the production Metal regression (34 checks).
+Local only; this patch does not authorize upstream publication.
+No game profiles, game files, fonts, or generated assets are included.
+
+---
+ dm/gfx/nvn/nvn_mtl.m         |  5 ++++-
+ dm/gfx/tests/Makefile        |  5 ++++-
+ dm/gfx/tests/t_view_levels.m | 43 +++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 51 insertions(+), 2 deletions(-)
+
+diff --git a/dm/gfx/nvn/nvn_mtl.m b/dm/gfx/nvn/nvn_mtl.m
+index cad4df0a4c74b779276503bacfa2644b1fde23a3..14d4a90a125f544d5caa661c200e681fdef029fe 100644
+--- a/dm/gfx/nvn/nvn_mtl.m
++++ b/dm/gfx/nvn/nvn_mtl.m
+@@ -1160,7 +1160,7 @@ static void mtl_finish_gpu(void) {
+ 
+ // ================= Render replay =================
+ #include "../../host/front.h"
+-static int g_red_once[109];
++static int g_red_once[110];
+ #define RED_ONCE(k, ...) do { if (!g_red_once[k]++) MLOG("[RED] " __VA_ARGS__); } while (0)
+ // NVN vertex streams 0–15 → Metal vertex buffer slots: 0–13 go to 16–29 (30 is the constant fallback buffer), 14 and 15 to 14 and 15. Metal has only the 31 slots 0–30; translated shaders use only buffer(0) (the argument buffer),
+ // and the host's own vertex functions read no vertex buffers. 13 Sentinels uses stream 15, and the old 16 + stream went out of range (Metal assertion: buffer index (31) must be < 31)
+@@ -3181,6 +3181,9 @@ static MTLTextureType ttype(int target, int fallback) {
+             sg = g_ser_gen;
+         }
+         NSUInteger l0 = r.v.set_levels ? r.v.base_level : 0, nl = r.v.set_levels && r.v.nlevels ? r.v.nlevels : base.mipmapLevelCount - l0;
++        if (l0 >= base.mipmapLevelCount) { RED_ONCE(109, "texture view id %d starts at mip %lu beyond %lu levels", tid, (unsigned long)l0, (unsigned long)base.mipmapLevelCount); return nil; }
++        // The count can exceed the levels left after the base (Echoes: 1 + 7 on seven levels); clip the maximum mip as deko3d's Tegra descriptor writer does.
++        if (nl > base.mipmapLevelCount - l0) nl = base.mipmapLevelCount - l0;
+         NSUInteger s0 = r.v.set_layers ? r.v.min_layer : 0;
+         NSUInteger ns = base.textureType == MTLTextureType3D ? 1 : (r.v.set_layers && r.v.nlayers ? r.v.nlayers : base.arrayLength * (base.textureType == MTLTextureTypeCube || base.textureType == MTLTextureTypeCubeArray ? 6 : 1) - s0);
+         MTLTextureType tt = r.v.set_target ? ttype(r.v.target, base.textureType) : base.textureType;
+diff --git a/dm/gfx/tests/Makefile b/dm/gfx/tests/Makefile
+index 5e741f8a90f126df3b59ae11cfccab542eb4a0f9..f11710bf06b5417b73948d77f457835cc913a18a 100644
+--- a/dm/gfx/tests/Makefile
++++ b/dm/gfx/tests/Makefile
+@@ -68,9 +68,11 @@ t_rt_depth_ro: t_rt_depth_ro.m ../../host/crash.c $(GFX) $(GFX_H)
+ 	clang $(CFLAGS) -fobjc-arc -o $@ t_rt_depth_ro.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m ../nvn/nvn_entry.S ../nvn/nvn_thunks.S,$(GFX)) $(FW)
+ t_pso_skey: t_pso_skey.m ../nvn/nvn_pso_skey.h ../nvn/nvn_obj.h
+ 	clang $(CFLAGS) -fobjc-arc -o $@ t_pso_skey.m -framework Foundation
++t_view_levels: t_view_levels.m ../nvn/hle_nvn.c ../../host/crash.c $(GFX) $(GFX_H)
++	clang $(CFLAGS) -fobjc-arc -o $@ t_view_levels.m ../nvn/hle_nvn.c ../../host/crash.c ../../host/hle_bigstack.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+ t_pfv: t_pfv.m ../../host/crash.c $(GFX) $(GFX_H)
+ 	clang $(CFLAGS) -fobjc-arc -o $@ t_pfv.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m ../nvn/nvn_entry.S ../nvn/nvn_thunks.S,$(GFX)) $(FW)
+-run: t_nvn t_dirty_slots t_dirty_race t_builtin t_vin t_tbuf2d t_deswz_gpu t_pace t_fstep t_refl t_hmap t_cover t_fuse_check t_present_crop t_reorder_chain t_defer_chain t_zskip t_xv t_ub t_vbuf t_mip_extent t_rt_range_shape t_rt_range_ro t_rt_range t_rt_depth_ro t_pso_skey t_pfv
++run: t_nvn t_dirty_slots t_dirty_race t_builtin t_vin t_tbuf2d t_deswz_gpu t_pace t_fstep t_refl t_hmap t_cover t_fuse_check t_present_crop t_reorder_chain t_defer_chain t_zskip t_xv t_ub t_vbuf t_mip_extent t_rt_range_shape t_rt_range_ro t_rt_range t_rt_depth_ro t_pso_skey t_pfv t_view_levels
+ 	./t_nvn
+ 	./t_dirty_slots
+ 	./t_dirty_race
+@@ -104,5 +106,6 @@ run: t_nvn t_dirty_slots t_dirty_race t_builtin t_vin t_tbuf2d t_deswz_gpu t_pac
+ 	DM_NVN_UNWRITTEN_DC=0 MTL_DEBUG_LAYER=1 ./t_rt_range --sample-attachment --both-flags
+ 	./t_pso_skey
+ 	MTL_DEBUG_LAYER=1 ./t_pfv
++	MTL_DEBUG_LAYER=1 ./t_view_levels
+ 	python3 test_tbdr_budget.py
+ .PHONY: run
+diff --git a/dm/gfx/tests/t_view_levels.m b/dm/gfx/tests/t_view_levels.m
+new file mode 100644
+index 0000000000000000000000000000000000000000..4f42e86d04d9a24f4e32384f69bddb8d4199b9e4
+--- /dev/null
++++ b/dm/gfx/tests/t_view_levels.m
+@@ -0,0 +1,43 @@
++// Registered texture views use only the mip levels present in the texture; exercise the production Metal path.
++#include "../nvn/nvn_mtl.m"
++uint64_t g_t0_ns;
++int dm_guest_as_contains(uintptr_t address) { (void)address; return 0; }
++void *front_metal_layer(void) { return NULL; }
++module_t *module_of(const void *p) { (void)p; return NULL; }
++module_t g_mod[MAX_MOD]; int g_nmod;
++void svc_thread_dump(void) {}
++uint64_t now_ns(void) { return bp_now(); }
++static int checks, fails;
++#define CHECK(c, msg) do { checks++; if (!(c)) { fails++; fprintf(stderr, "FAIL: %s\n", msg); } } while (0)
++static void view_case(int tid, unsigned level, unsigned count, unsigned expected, int layers) {
++    tex_t t = {.magic=MAGIC('T','E','X',0), .serial=97000+(unsigned)tid};
++    t.d = (nvn_texdesc){.target=layers > 1 ? NVN_TEXTURE_TARGET_2D_ARRAY : NVN_TEXTURE_TARGET_2D,
++                       .format=NVN_FORMAT_RGBA8, .width=64, .height=64, .depth=layers, .levels=7, .samples=1};
++    id<MTLTexture> base = [g_dev newTextureWithDescriptor:tex_desc(&t, 0)];
++    CHECK(base && base.mipmapLevelCount == 7, "base has seven levels");
++    serial_put(t.serial, base);
++    view_t v = {.set_levels=1, .base_level=level, .nlevels=count};
++    mtl_reg_tex(tid, &t, &v);
++    pthread_mutex_lock(&g_rmu);
++    id<MTLTexture> view = tex_by_id(tid);
++    CHECK((view != nil) == (expected != 0), "invalid start is empty; valid start creates view");
++    if (expected) {
++        CHECK(view.mipmapLevelCount == expected, "effective mip count");
++        CHECK(view.width == (64u >> level), "view retains requested base level");
++        CHECK(view.arrayLength == layers, "array layers preserved");
++        CHECK(tex_by_id(tid) == view, "cached view preserves range");
++    }
++    pthread_mutex_unlock(&g_rmu);
++}
++int main(void) { @autoreleasepool {
++    mtl_init();
++    view_case(300, 0, 7, 7, 1);
++    view_case(301, 1, 7, 6, 6);
++    view_case(302, 1, 2, 2, 1);
++    view_case(303, 3, 0, 4, 1);
++    view_case(304, 6, 7, 1, 1);
++    view_case(305, 7, 1, 0, 1);
++    view_case(306, 255, 0, 0, 1);
++    printf("texture view levels: %d checks, %d failed\n", checks, fails);
++    return fails != 0;
++} }

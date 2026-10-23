@@ -5,11 +5,8 @@ Subject: [PATCH] Make touch polling diagnostics safe for concurrent readers
 
 Use relaxed atomic state for the diagnostic counter and cached logging toggle. Preserve the legacy logging cadence and touch delivery semantics.
 ---
- dm/host/hle_hid.c | 9 ++++++---
- 1 file changed, 6 insertions(+), 3 deletions(-)
-
 diff --git a/dm/host/hle_hid.c b/dm/host/hle_hid.c
-index a9b107b..45ea110 100644
+index a9b107be9be9a770ee49a9f52ac44c330b5744c4..45ea1104a8487c65326363018edb0f1d3ef30118 100644
 --- a/dm/host/hle_hid.c
 +++ b/dm/host/hle_hid.c
 @@ -272,9 +272,12 @@ int touch_fill_n(void *out, int max, uint64_t now_ns);
@@ -28,6 +25,3 @@ index a9b107b..45ea110 100644
      if (dm_opmode() == 0) { touch_fill_n(s, n, now_ns()); return; }
      int64_t *p = s; p[0] = atomic_fetch_add(&g_sampling, 1) + 1; ((int32_t *)s)[2] = 0; ((int32_t *)s)[3] = 0;
  }
--- 
-2.54.0 (Apple Git-157)
-

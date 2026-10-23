@@ -1,0 +1,128 @@
+From: seedds <seedds@gmail.com>
+Subject: [PATCH] Compose format and descriptor texture swizzles
+
+Preserve packed-format component order and no-alpha semantics when
+building sampled Metal views. Exercise the production path with real
+Metal reads, including format fallback and descriptor precedence.
+
+diff --git a/dm/gfx/nvn/nvn_mtl.m b/dm/gfx/nvn/nvn_mtl.m
+index 14d4a90..e6be531 100644
+--- a/dm/gfx/nvn/nvn_mtl.m
++++ b/dm/gfx/nvn/nvn_mtl.m
+@@ -3156,11 +3156,17 @@ static MTLTextureType ttype(int target, int fallback) {
+     id<MTLTexture> base = tex_mtl(&rp->t);
+     if (!base) return nil;
+     v = base;
+-    // Channel swizzle: the view's if set, otherwise the one from texture building; identity builds no view (SMBW's font cache is (1 1 1 R): without the swizzle glyphs become white blocks)
+-    uint8_t sw[4] = {MTLTextureSwizzleRed, MTLTextureSwizzleGreen, MTLTextureSwizzleBlue, MTLTextureSwizzleAlpha}; int need_sw = 0;
++    // Descriptor channels select NVN-format components, not Metal's storage components.
++    uint8_t sw[4] = {MTLTextureSwizzleRed, MTLTextureSwizzleGreen, MTLTextureSwizzleBlue, MTLTextureSwizzleAlpha}, fmt_sw[4]; int need_sw = 0;
++    uint32_t view_pf; int format_ok = nvn_fmt_to_mtl(r.has_v && r.v.set_format ? r.v.format : r.t.d.format, &view_pf, fmt_sw) && view_pf;
++    if (!format_ok) nvn_fmt_to_mtl(r.t.d.format, NULL, fmt_sw);
+     if (r.has_v && r.v.set_swizzle) memcpy(sw, r.v.swz, 4);
+     else if (r.t.set_swz) for (int c = 0; c < 4; c++) sw[c] = (uint8_t)(r.t.swz >> (3 * c) & 7);
+-    for (int c = 0; c < 4; c++) { if (sw[c] > MTLTextureSwizzleAlpha) sw[c] = (uint8_t)(MTLTextureSwizzleRed + c); if (sw[c] != MTLTextureSwizzleRed + c) need_sw = 1; }
++    for (int c = 0; c < 4; c++) {
++        if (sw[c] > MTLTextureSwizzleAlpha) sw[c] = (uint8_t)(MTLTextureSwizzleRed + c);
++        if (sw[c] >= MTLTextureSwizzleRed) sw[c] = fmt_sw[sw[c] - MTLTextureSwizzleRed];
++        if (sw[c] != MTLTextureSwizzleRed + c) need_sw = 1;
++    }
+     // Stencil mode (nvnTextureViewSetDepthStencilMode STENCIL): the view reads the stencil of a depth-stencil texture, through Metal's stencil-only format. The shader declares a float texture and
+     // takes the raw bits (the translator has no integer texture type): a read of the integer view gives the stencil value in those bits. Pokémon Legends: Z-A's deferred lighting tests stencil bit 6
+     // this way and discards; reading depth instead, the bit followed the depth value and the whole lit picture was striped
+diff --git a/dm/gfx/tests/Makefile b/dm/gfx/tests/Makefile
+index f11710b..958d4fc 100644
+--- a/dm/gfx/tests/Makefile
++++ b/dm/gfx/tests/Makefile
+@@ -68,11 +68,13 @@ t_rt_depth_ro: t_rt_depth_ro.m ../../host/crash.c $(GFX) $(GFX_H)
+ 	clang $(CFLAGS) -fobjc-arc -o $@ t_rt_depth_ro.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m ../nvn/nvn_entry.S ../nvn/nvn_thunks.S,$(GFX)) $(FW)
+ t_pso_skey: t_pso_skey.m ../nvn/nvn_pso_skey.h ../nvn/nvn_obj.h
+ 	clang $(CFLAGS) -fobjc-arc -o $@ t_pso_skey.m -framework Foundation
++t_view_swizzle: t_view_swizzle.m ../nvn/hle_nvn.c ../../host/crash.c ../../host/hle_bigstack.c $(GFX) $(GFX_H)
++	clang $(CFLAGS) -fobjc-arc -o $@ t_view_swizzle.m ../nvn/hle_nvn.c ../../host/crash.c ../../host/hle_bigstack.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+ t_view_levels: t_view_levels.m ../nvn/hle_nvn.c ../../host/crash.c $(GFX) $(GFX_H)
+ 	clang $(CFLAGS) -fobjc-arc -o $@ t_view_levels.m ../nvn/hle_nvn.c ../../host/crash.c ../../host/hle_bigstack.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+ t_pfv: t_pfv.m ../../host/crash.c $(GFX) $(GFX_H)
+ 	clang $(CFLAGS) -fobjc-arc -o $@ t_pfv.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m ../nvn/nvn_entry.S ../nvn/nvn_thunks.S,$(GFX)) $(FW)
+-run: t_nvn t_dirty_slots t_dirty_race t_builtin t_vin t_tbuf2d t_deswz_gpu t_pace t_fstep t_refl t_hmap t_cover t_fuse_check t_present_crop t_reorder_chain t_defer_chain t_zskip t_xv t_ub t_vbuf t_mip_extent t_rt_range_shape t_rt_range_ro t_rt_range t_rt_depth_ro t_pso_skey t_pfv t_view_levels
++run: t_nvn t_dirty_slots t_dirty_race t_builtin t_vin t_tbuf2d t_deswz_gpu t_pace t_fstep t_refl t_hmap t_cover t_fuse_check t_present_crop t_reorder_chain t_defer_chain t_zskip t_xv t_ub t_vbuf t_mip_extent t_rt_range_shape t_rt_range_ro t_rt_range t_rt_depth_ro t_pso_skey t_pfv t_view_levels t_view_swizzle
+ 	./t_nvn
+ 	./t_dirty_slots
+ 	./t_dirty_race
+@@ -107,5 +109,6 @@ run: t_nvn t_dirty_slots t_dirty_race t_builtin t_vin t_tbuf2d t_deswz_gpu t_pac
+ 	./t_pso_skey
+ 	MTL_DEBUG_LAYER=1 ./t_pfv
+ 	MTL_DEBUG_LAYER=1 ./t_view_levels
++	MTL_DEBUG_LAYER=1 ./t_view_swizzle
+ 	python3 test_tbdr_budget.py
+ .PHONY: run
+diff --git a/dm/gfx/tests/t_view_swizzle.m b/dm/gfx/tests/t_view_swizzle.m
+new file mode 100644
+index 0000000..3a1c92b
+--- /dev/null
++++ b/dm/gfx/tests/t_view_swizzle.m
+@@ -0,0 +1,64 @@
++#include "../nvn/nvn_mtl.m"
++uint64_t g_t0_ns;
++int dm_guest_as_contains(uintptr_t address) { (void)address; return 0; }
++void *front_metal_layer(void) { return NULL; }
++module_t *module_of(const void *p) { (void)p; return NULL; }
++module_t g_mod[MAX_MOD]; int g_nmod;
++void svc_thread_dump(void) {}
++uint64_t now_ns(void) { return bp_now(); }
++static int checks, fails;
++#define CHECK(c, msg) do { checks++; if (!(c)) { fails++; fprintf(stderr, "FAIL: %s\n", msg); } } while (0)
++static void swizzle_case(int tid, int format, int view_format, const void *pixels, unsigned bytes, const uint8_t *builder, const uint8_t *mapping, float expected[8]) {
++    tex_t t = {.magic=MAGIC('T','E','X',0), .serial=98000+(unsigned)tid};
++    t.d = (nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D, .format=format, .width=2, .height=1, .depth=1, .levels=1, .samples=1};
++    if (builder) { t.set_swz = 1; for (int c = 0; c < 4; c++) t.swz |= (uint16_t)builder[c] << (3 * c); }
++    MTLTextureDescriptor *d = tex_desc(&t, 1); d.storageMode = MTLStorageModeShared;
++    id<MTLTexture> base = [g_dev newTextureWithDescriptor:d];
++    CHECK(base != nil, "packed texture created");
++    [base replaceRegion:MTLRegionMake2D(0, 0, 2, 1) mipmapLevel:0 withBytes:pixels bytesPerRow:bytes];
++    serial_put(t.serial, base);
++    view_t v = {0}; if (mapping) { v.set_swizzle = 1; memcpy(v.swz, mapping, 4); }
++    if (view_format) { v.set_format = 1; v.format = view_format; }
++    mtl_reg_tex(tid, &t, mapping || view_format ? &v : NULL);
++    pthread_mutex_lock(&g_rmu);
++    id<MTLTexture> view = tex_by_id(tid);
++    CHECK(view != nil, "registered view created");
++    CHECK(tex_by_id(tid) == view, "cached view retained");
++    pthread_mutex_unlock(&g_rmu);
++    NSError *error = nil;
++    id<MTLLibrary> library = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nkernel void sample_packed(texture2d<float, access::read> t [[texture(0)]], device float4 *out [[buffer(0)]], uint i [[thread_position_in_grid]]) { out[i] = t.read(uint2(i, 0)); }\n" options:nil error:&error];
++    id<MTLComputePipelineState> pipeline = [g_dev newComputePipelineStateWithFunction:[library newFunctionWithName:@"sample_packed"] error:&error];
++    CHECK(pipeline != nil, "sampling pipeline created");
++    id<MTLBuffer> output = [g_dev newBufferWithLength:32 options:MTLResourceStorageModeShared];
++    id<MTLCommandBuffer> command = q_cb(); id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
++    [encoder setComputePipelineState:pipeline]; [encoder setTexture:view atIndex:0]; [encoder setBuffer:output offset:0 atIndex:0];
++    [encoder dispatchThreads:MTLSizeMake(2, 1, 1) threadsPerThreadgroup:MTLSizeMake(2, 1, 1)];
++    [encoder endEncoding]; [command commit]; [command waitUntilCompleted];
++    CHECK(command.status == MTLCommandBufferStatusCompleted, "sampling completed");
++    float *actual = output.contents;
++    for (int i = 0; i < 8; i++) { if (fabsf(actual[i] - expected[i]) > 0.001f) fprintf(stderr, "case %d component %d: got %g expected %g\n", tid, i, actual[i], expected[i]); CHECK(fabsf(actual[i] - expected[i]) <= 0.001f, "sampled channel matches NVN format and mapping"); }
++}
++int main(void) { @autoreleasepool {
++    mtl_init();
++    uint16_t pixels[2] = {0x001f, 0xf800};
++    uint8_t rgb1[4] = {NVN_SWZ_R, NVN_SWZ_G, NVN_SWZ_B, NVN_SWZ_ONE};
++    uint8_t map[4] = {NVN_SWZ_B, NVN_SWZ_R, NVN_SWZ_ONE, NVN_SWZ_ZERO};
++    float rgb[8] = {1,0,0,1, 0,0,1,1};
++    float bgr[8] = {0,0,1,1, 1,0,0,1};
++    float composed[8] = {0,1,1,0, 1,0,1,0};
++    swizzle_case(400, NVN_FORMAT_RGB565, 0, pixels, 4, NULL, NULL, rgb);
++    swizzle_case(401, NVN_FORMAT_RGB565, 0, pixels, 4, rgb1, NULL, rgb);
++    swizzle_case(402, NVN_FORMAT_RGB565, 0, pixels, 4, rgb1, map, composed);
++    swizzle_case(403, NVN_FORMAT_BGR565, 0, pixels, 4, NULL, NULL, bgr);
++    swizzle_case(404, NVN_FORMAT_RG8, 0, pixels, 4, NULL, NULL, (float[8]){31/255.f,0,0,1, 0,248/255.f,0,1});
++    uint8_t rgba[8] = {255,0,0,0, 0,0,255,64};
++    swizzle_case(405, NVN_FORMAT_RGBX8, 0, rgba, 8, NULL, NULL, rgb);
++    swizzle_case(406, NVN_FORMAT_RGBX8, 0, rgba, 8, NULL, (uint8_t[4]){NVN_SWZ_A,NVN_SWZ_A,NVN_SWZ_A,NVN_SWZ_A}, (float[8]){1,1,1,1,1,1,1,1});
++    swizzle_case(407, NVN_FORMAT_RGBA8, NVN_FORMAT_RGBX8, rgba, 8, NULL, NULL, rgb);
++    swizzle_case(408, NVN_FORMAT_RGBA8, 0, rgba, 8, NULL, NULL, (float[8]){1,0,0,0, 0,0,1,64/255.f});
++    swizzle_case(409, NVN_FORMAT_RGBX8, NVN_FORMAT_RGBA8, rgba, 8, NULL, NULL, (float[8]){1,0,0,0, 0,0,1,64/255.f});
++    swizzle_case(410, NVN_FORMAT_RGB565, -1, pixels, 4, NULL, NULL, rgb);
++    swizzle_case(411, NVN_FORMAT_RGBX8, -1, rgba, 8, NULL, NULL, rgb);
++    printf("texture view swizzle: %d checks, %d failed\n", checks, fails);
++    return fails != 0;
++} }
