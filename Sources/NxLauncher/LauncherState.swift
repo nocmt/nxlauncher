@@ -673,6 +673,14 @@ final class LauncherState: ObservableObject {
         }
     }
 
+    /// The failure of an action whose button also exists outside the workspace (开始游戏 in the
+    /// library): the notice stays in the log and the header, and the toast carries it over the
+    /// window, so the failure is never something only the log has seen.
+    private func notifyError(_ message: String) {
+        notify(message, isError: true)
+        showToast(message, warning: true)
+    }
+
     /// Start the built Mac .app (it is a normal macOS app: NSWorkspace opens it).
     ///
     /// The .app is looked for in a few places, because the export directory is not the only one:
@@ -681,9 +689,9 @@ final class LauncherState: ObservableObject {
     /// game really reads them.
     func launchGame() {
         guard !busy, selectedGame != nil else { return }
-        guard let plan, plan.built else { notify("还没有编译，先编译一次", isError: true); return }
+        guard let plan, plan.built else { notifyError("还没有编译，先编译一次"); return }
         guard let app = findGameApp() else {
-            notify("找不到已导出的 .app。导出目录：\(exportDir)；游戏文件夹：\(gameDir)。先点「导出 .app」，或把「导出目录」指到 .app 所在的文件夹。", isError: true)
+            notifyError("找不到已导出的 .app。导出目录：\(exportDir)；游戏文件夹：\(gameDir)。先点「导出 .app」，或把「导出目录」指到 .app 所在的文件夹。")
             return
         }
         setGameApp(app)
