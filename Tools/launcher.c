@@ -4,6 +4,7 @@
 // whose CFBundleExecutable is a shell script), so this tiny program sets the environment the host
 // needs and execs it. The game's own code then runs natively, with Switch graphics on Metal.
 #include <fcntl.h>
+#include <dirent.h>
 #include <errno.h>
 #include <mach-o/dyld.h>
 #include <stdio.h>
@@ -13,9 +14,15 @@
 #include <unistd.h>
 
 // Baked in when the launcher is compiled (the packaging script passes them): the Application Support
-// folder (saves and log.txt) and the memory the game is told it has. The defaults are for a manual build.
+// folder (saves and log.txt) and the memory the game is told it has. The support folder is a fixed
+// per-game home (nxnative/<title id>), so renaming the .app cannot lose the saves;
+// APP_LEGACY_SUPPORT_NAME is the folder the older exports used (the .app's own name), which the
+// first run moves over. The defaults are for a manual build.
 #ifndef APP_SUPPORT_NAME
 #define APP_SUPPORT_NAME "nxnative"
+#endif
+#ifndef APP_LEGACY_SUPPORT_NAME
+#define APP_LEGACY_SUPPORT_NAME ""
 #endif
 #ifndef APP_MEM_POOL
 #define APP_MEM_POOL ""
@@ -31,6 +38,34 @@ static void make_dirs(const char *path) {
         if (*q == '/') { *q = 0; mkdir(buf, 0755); *q = '/'; }
     }
     mkdir(buf, 0755);
+}
+
+// Move the old .app-name support folder into the fixed per-game home, file by file, never
+// overwriting what is already there (a name present on both sides stays the new one; directories
+// merge). The legacy folder remains when something was kept on both sides.
+static int migrate_support_folder(const char *sup, const char *legacy) {
+    struct stat lst;
+    if (stat(legacy, &lst) != 0 || !S_ISDIR(lst.st_mode)) return 0;
+    make_dirs(sup);
+    int moved = 0;
+    DIR *d = opendir(legacy);
+    if (!d) return 0;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        char from[4096], to[4096];
+        snprintf(from, sizeof from, "%s/%s", legacy, e->d_name);
+        snprintf(to, sizeof to, "%s/%s", sup, e->d_name);
+        struct stat tst;
+        if (stat(to, &tst) == 0) {
+            if (S_ISDIR(tst.st_mode)) moved |= migrate_support_folder(to, from);
+            continue;
+        }
+        if (rename(from, to) == 0) moved = 1;
+    }
+    closedir(d);
+    rmdir(legacy);
+    return moved;
 }
 
 static void set(const char *k, const char *v) { setenv(k, v, 1); }
@@ -58,6 +93,15 @@ int main(int argc, char **argv) {
     const char *home = getenv("HOME");
     if (!home || !*home) home = "/Users/guxiu";
     snprintf(sup, sizeof sup, "%s/Library/Application Support/" APP_SUPPORT_NAME, home);
+    // An export from before the fixed support home kept the saves under the .app's own name; bring
+    // that folder over before anything creates the new one.
+    int migrated = 0;
+    const char *legacy_name = APP_LEGACY_SUPPORT_NAME;
+    if (legacy_name[0] && strcmp(legacy_name, APP_SUPPORT_NAME)) {
+        char legacy[4096];
+        snprintf(legacy, sizeof legacy, "%s/Library/Application Support/%s", home, legacy_name);
+        migrated = migrate_support_folder(sup, legacy);
+    }
     // The host lives in Contents/MacOS, next to this launcher: after the exec the process is still inside the
     // bundle, so macOS resolves the bundle for it and the window / the Dock entry show the app's own icon.
     // (With the host in Resources/app the process would be a bare executable and macOS would show the generic
@@ -137,6 +181,7 @@ int main(int argc, char **argv) {
         dup2(fd, 2);
         if (fd > 2) close(fd);
     }
+    if (migrated) fprintf(stderr, "support folder: the saves of \"%s\" moved to " APP_SUPPORT_NAME "\n", APP_LEGACY_SUPPORT_NAME);
 
     char *args[8];
     int n = 0;

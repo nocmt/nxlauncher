@@ -23,7 +23,8 @@
 #   --display     the name in the menu bar and the window title (default: the profile's name)
 #   --bundle-id   the bundle identifier (default: org.nxnative.<title id in lowercase>.mac)
 #   --dlc         a folder holding the add-on content: <index>/RomFS per DLC (optional)
-#   --support     the Application Support folder (default: the bundle name); saves and log.txt live there
+#   --support     the Application Support folder (default: nxnative/<title id> — a fixed per-game home
+#                 that survives renaming the .app); saves and log.txt live there
 #   --mem-pool    the memory the game is told it has (default: the profile's app_pool)
 #   --mem-reserve the address space reserved for it (default: the profile's mem_reserve)
 set -eu
@@ -82,6 +83,11 @@ IPA_NAME=$(prof ipa)
 NAME=${NAME:-${IPA_NAME%.ipa}}
 DISPLAY=${DISPLAY:-$GAME_NAME}
 BUNDLE_ID=${BUNDLE_ID:-org.nxnative.$(printf '%s' "$GAME" | tr 'A-Z' 'a-z').mac}
+# The support folder: a fixed per-game home nxnative/<title id> (the id is baked into the bundle, the
+# folder's name does not follow the .app), falling back to the bundle name when there is no id. The
+# launcher also gets the bundle name as APP_LEGACY_SUPPORT_NAME: exports before this kept the saves
+# there, and the launcher moves that folder over on the first run.
+if [ -z "$SUPPORT" ] && [ -n "$GAME" ]; then SUPPORT="nxnative/$GAME"; fi
 SUPPORT=${SUPPORT:-$NAME}
 MEM_POOL=${MEM_POOL:-$(prof app_pool)}
 MEM_RESERVE=${MEM_RESERVE:-$(prof mem_reserve)}
@@ -184,7 +190,7 @@ fi
 # --- the launcher: a real Mach-O binary (LaunchServices refuses a bundle whose CFBundleExecutable
 #     is a shell script), it sets the environment and execs the host ---
 echo "[9] the launcher ..."
-clang -O2 -DAPP_SUPPORT_NAME="\"$SUPPORT\"" -DAPP_MEM_POOL="\"$MEM_POOL\"" -DAPP_MEM_RESERVE="\"$MEM_RESERVE\"" \
+clang -O2 -DAPP_SUPPORT_NAME="\"$SUPPORT\"" -DAPP_LEGACY_SUPPORT_NAME="\"$NAME\"" -DAPP_MEM_POOL="\"$MEM_POOL\"" -DAPP_MEM_RESERVE="\"$MEM_RESERVE\"" \
   -o "$OUT/Contents/MacOS/BotW" "$HERE/launcher.c" || { echo "FAIL: the launcher did not build"; exit 1; }
 chmod +x "$OUT/Contents/MacOS/BotW"
 file "$OUT/Contents/MacOS/BotW" | sed 's/^/    /'

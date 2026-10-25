@@ -22,8 +22,14 @@ struct GameLibraryTests {
         let folderB = try directory("GameB")
         let exports = try directory("exports")
         let appA = try directory("exports/RenamedA.app")
+        // the launcher's baked support-home marker (the build writes it into the executable), which
+        // tells the launcher this export reads the fixed per-game folder
+        let exeA = try directory("exports/RenamedA.app/Contents/MacOS")
+        try Data("format %s/Library/Application Support/nxnative/GameA\0".utf8)
+            .write(to: exeA.appendingPathComponent("RenamedA"), options: .atomic)
         _ = try directory("exports/Unrelated.app")
         let envA = try directory("support/RenamedA").appendingPathComponent("env.txt")
+        let envHomeFile = support.appendingPathComponent("nxnative").appendingPathComponent("GameA").appendingPathComponent("env.txt")
         let originalEnv = "# fixture\nDM_FPS_TARGET=30\nDM_LANG=en-US\nDM_OPMODE=1\nDM_PADMAP=custom\n"
         try originalEnv.write(to: envA, atomically: true, encoding: .utf8)
         let script = """
@@ -65,7 +71,7 @@ struct GameLibraryTests {
         precondition(state.targetFPS == 60 && state.language == .system && state.opMode == .handheld)
         precondition(state.findGameApp() == nil, "Never use another game's legacy pointer or arbitrary .app")
         state.runtimeSettingsChanged()
-        precondition(!fm.fileExists(atPath: support.appendingPathComponent("GameB").path))
+        precondition(!fm.fileExists(atPath: support.appendingPathComponent("nxnative").appendingPathComponent("GameB").path))
         let expectedB = try directory("exports/GameB.app")
         precondition(state.findGameApp()?.path == expectedB.path)
         try fm.removeItem(at: expectedB)
@@ -89,14 +95,17 @@ struct GameLibraryTests {
         state.selectGame(a)
         try await Task.sleep(nanoseconds: 100_000_000)
         precondition(state.targetFPS == 30 && state.language == .enUS && state.opMode == .console)
+        // The plan named the title id: the .app-name folder moved into the fixed per-game home, env intact.
+        precondition(!fm.fileExists(atPath: envA.path) && fm.fileExists(atPath: envHomeFile.path),
+                     "The legacy support folder must migrate to nxnative/<title id>")
         state.targetFPS = 120
         state.runtimeSettingsChanged()
-        let written = try String(contentsOf: envA, encoding: .utf8)
+        let written = try String(contentsOf: envHomeFile, encoding: .utf8)
         precondition(written.contains("DM_FPS_TARGET=120") && written.contains("DM_PADMAP=custom"))
         state.runtimeSettingsChanged()
         state.loadEnv()
         state.runtimeSettingsChanged()
-        let afterReload = try String(contentsOf: envA, encoding: .utf8)
+        let afterReload = try String(contentsOf: envHomeFile, encoding: .utf8)
         precondition(afterReload == written)
         precondition(state.library.first(where: { $0.id == a.id })?.version == "1.2")
         precondition(state.library.first(where: { $0.id == a.id })?.appPath == appA.path)
@@ -123,7 +132,7 @@ struct GameLibraryTests {
         try await Task.sleep(nanoseconds: 100_000_000)
         precondition(state.selectedGameID == nil && state.plan == nil && state.gameDir.isEmpty,
                      "Queued plans must not restore a deselected game")
-        precondition(store.load().count == 2 && fm.fileExists(atPath: envA.path))
+        precondition(store.load().count == 2 && fm.fileExists(atPath: envHomeFile.path))
         state.selectGame(a)
 
         // Removal only drops references; stale queued plans cannot recreate removed entries.
@@ -132,10 +141,12 @@ struct GameLibraryTests {
         try await Task.sleep(nanoseconds: 100_000_000)
         precondition(state.library.isEmpty && state.selectedGameID == nil && state.plan == nil)
         precondition(fm.fileExists(atPath: folderA.path) && fm.fileExists(atPath: appA.path))
-        precondition(fm.fileExists(atPath: envA.path))
+        precondition(fm.fileExists(atPath: envHomeFile.path))
         precondition(!state.writeEnv())
         state.runtimeSettingsChanged()
-        precondition(!fm.fileExists(atPath: support.appendingPathComponent("nxnative").path))
+        let homeSiblings = (try? fm.contentsOfDirectory(atPath: support.appendingPathComponent("nxnative").path)) ?? []
+        precondition(homeSiblings.count == 1,
+                     "Nothing writes after removal: the per-game home stays the only one")
         precondition(store.load().isEmpty)
 
         // Canonical symlink duplicates collapse; explicit CLI folder registers only on refresh.
@@ -152,6 +163,21 @@ struct GameLibraryTests {
         try await Task.sleep(nanoseconds: 100_000_000)
         precondition(cli.library.count == 1)
         precondition(cli.findGameApp() == nil, "Renamed legacy app is not demonstrably associated")
+        state.logLines = []
+        let traceback = "Traceback (most recent call last):\n  patch_nso.py:316\nAssertionError"
+        state.handle(.log(traceback))
+        state.handle(.error("rewrite failed"))
+        let streamedLog = state.logLines
+        state.recordPipelineFailure(Pipeline.Failure.exited(1, traceback), operation: "编译")
+        precondition(state.notice == "编译失败（退出码 1），详情见构建日志" && state.noticeIsError)
+        precondition(!state.notice.contains("Traceback") && !state.notice.contains("\n"))
+        precondition(state.logLines == streamedLog, "Failure completion must not replay streamed diagnostics")
+        state.recordPipelineFailure(Pipeline.Failure.cannotRun("Missing interpreter"), operation: "导出")
+        precondition(state.notice == "导出失败，无法启动构建流程，详情见构建日志")
+        precondition(state.logLines.last == "✗ Cannot run pipeline: Missing interpreter")
+        for index in 0..<501 { state.handle(.log("line-\(index)")) }
+        precondition(state.logLines.count == 500 && state.logLines.first == "line-1")
+        print("PASS: compact failure status, streamed diagnostic deduplication, launch failure logging and 500-line cap")
         print("PASS: Codable defaults, canonical identity, persistence, keys path, settings reads/writes, cross-game app isolation, stale plans, busy guards, reference-only removal and CLI registration")
     }
 }

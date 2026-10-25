@@ -34,8 +34,9 @@ final class LauncherState: ObservableObject {
     /// failure is never silent (the progress text alone is only for the running operations).
     @Published var notice: String = ""
     @Published var noticeIsError: Bool = false
-    /// The .app that "开始游戏" starts; its name is also the name of the support folder
-    /// (env.txt, the saves), the way make-mac-app.sh builds it.
+    /// The .app that "开始游戏" starts. Exports before the fixed per-game support home
+    /// (nxnative/<title id>) kept the saves in a folder named after it; the migration moves
+    /// that folder over on the first run.
     @Published var gameAppPath: String = ""
 
     /// The operation mode: the handheld (720p, the Switch's touch screen exists) or the console
@@ -479,7 +480,7 @@ final class LauncherState: ObservableObject {
         }
     }
 
-    private func handle(_ event: PipelineEvent) {
+    func handle(_ event: PipelineEvent) {
         switch event {
         case .plan(let p):
             guard let game = selectedGame,
@@ -504,6 +505,7 @@ final class LauncherState: ObservableObject {
             migrateLegacyGameApp()
             if let app = findGameApp() { setGameApp(app) }
             else { gameAppPath = selectedGame?.appPath ?? "" }
+            migrateLegacySupportFolder()
             persistLibrary()
             loadEnv()
         case .games(let g):
@@ -530,8 +532,22 @@ final class LauncherState: ObservableObject {
         case .log(let line):
             appendLog(line)
         case .error(let msg):
-            notify(msg, isError: true)
+            appendLog("✗ \(msg)")
         }
+    }
+
+    /// Record a process failure without repeating streamed diagnostics in the header or log.
+    func recordPipelineFailure(_ error: Error, operation: String) {
+        if let failure = error as? Pipeline.Failure {
+            if case .cannotRun = failure, let diagnostic = failure.diagnostic {
+                appendLog("✗ \(diagnostic)")
+            }
+            notice = failure.notice(operation: operation)
+        } else {
+            appendLog("✗ \(error.localizedDescription)")
+            notice = "\(operation)失败，详情见构建日志"
+        }
+        noticeIsError = true
     }
 
     private func appendLog(_ line: String) {
@@ -595,7 +611,7 @@ final class LauncherState: ObservableObject {
             } catch {
                 Task { @MainActor in
                     guard let self, self.selectedGameID == sourceID, self.gameDir == dir else { return }
-                    self.notify("编译失败：\(error.localizedDescription)", isError: true)
+                    self.recordPipelineFailure(error, operation: "编译")
                     self.busy = false
                 }
             }
@@ -666,7 +682,7 @@ final class LauncherState: ObservableObject {
             } catch {
                 Task { @MainActor in
                     guard let self, self.selectedGameID == sourceID, self.gameDir == sourceFolder else { return }
-                    self.notify("导出失败：\(error.localizedDescription)", isError: true)
+                    self.recordPipelineFailure(error, operation: "导出")
                     self.busy = false
                 }
             }
@@ -695,6 +711,7 @@ final class LauncherState: ObservableObject {
             return
         }
         setGameApp(app)
+        migrateLegacySupportFolder()
         if appliedSettings?.supportPath != supportDir.path { loadEnv() }
         writeEnv()
         NSWorkspace.shared.open(app)
@@ -799,14 +816,75 @@ final class LauncherState: ObservableObject {
 
     // --- the settings the game reads ---
 
-    /// The Application Support folder the Mac app uses (saves, log.txt, env.txt).
+    /// The Application Support folder the Mac app uses (saves, log.txt, env.txt): `nxnative/<title id>`
+    /// — a fixed per-game home, so renaming the .app cannot lose the saves (the id is baked into the
+    /// bundle; the folder name does not follow it). Exports from before that change keep their
+    /// .app-name folder, and this follows them until the game is exported again.
     var supportDir: URL {
-        supportRoot.appendingPathComponent(appSupportName)
+        let id = selectedGame?.titleID ?? plan?.baseTitleID ?? ""
+        if !id.isEmpty, usesFixedSupportHome {
+            return supportRoot.appendingPathComponent("nxnative", isDirectory: true)
+                .appendingPathComponent(id, isDirectory: true)
+        }
+        return supportRoot.appendingPathComponent(appSupportName, isDirectory: true)
     }
 
-    /// The name of the support folder: the name of the .app that is started (make-mac-app.sh
-    /// builds the app and its support folder with the same name). Before an app is known, the
-    /// game's own name.
+    /// Whether the associated .app was built with the fixed per-game support home: its launcher
+    /// carries the folder's name as a baked format string, so the bundle itself says which scheme
+    /// it reads — no version file needed.
+    private var usesFixedSupportHome: Bool {
+        guard let game = selectedGame, !game.titleID.isEmpty, !game.appPath.isEmpty else { return false }
+        let macOS = URL(fileURLWithPath: game.appPath, isDirectory: true).appendingPathComponent("Contents/MacOS")
+        let marker = Data("Application Support/nxnative/\(game.titleID)".utf8)
+        let files = (try? FileManager.default.contentsOfDirectory(at: macOS, includingPropertiesForKeys: [.isRegularFileKey]))?
+            .filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true } ?? []
+        return files.contains { (try? Data(contentsOf: $0, options: .mappedIfSafe))?.range(of: marker) != nil }
+    }
+
+    /// Old exports kept the support folder under the .app's name, so renaming the .app started the
+    /// game over without its saves. Move that folder into the fixed per-game home once, on the first
+    /// run of an export that reads the new home and knows the old name.
+    func migrateLegacySupportFolder() {
+        guard let game = selectedGame, !game.titleID.isEmpty, appSupportName != "nxnative",
+              usesFixedSupportHome else { return }
+        let fm = FileManager.default
+        let home = supportRoot.appendingPathComponent("nxnative", isDirectory: true)
+            .appendingPathComponent(game.titleID, isDirectory: true)
+        guard !fm.fileExists(atPath: home.appendingPathComponent("save").path) else { return }
+        let legacy = supportRoot.appendingPathComponent(appSupportName, isDirectory: true)
+        guard legacy.path != home.path, fm.fileExists(atPath: legacy.path) else { return }
+        do {
+            try migrateFolder(from: legacy, to: home)
+            appendLog("已迁移存档与设置：\(appSupportName) → nxnative/\(game.titleID)")
+        } catch {
+            appendLog("✗ 迁移旧存档目录失败：\(error.localizedDescription)（旧目录保留，下次启动再试）")
+        }
+    }
+
+    /// Move `from` into `to`, file by file, never overwriting what is already there (a name present
+    /// on both sides stays the new one; directories merge). The source folder remains when
+    /// something was kept on both sides.
+    private func migrateFolder(from: URL, to: URL) throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: to, withIntermediateDirectories: true)
+        for item in try fm.contentsOfDirectory(atPath: from.path) {
+            let source = from.appendingPathComponent(item)
+            let target = to.appendingPathComponent(item)
+            if fm.fileExists(atPath: target.path) {
+                var isDirectory: ObjCBool = false
+                if fm.fileExists(atPath: source.path, isDirectory: &isDirectory), isDirectory.boolValue {
+                    try migrateFolder(from: source, to: target)
+                }
+                continue
+            }
+            try fm.moveItem(at: source, to: target)
+        }
+        try? fm.removeItem(at: from)
+    }
+
+    /// The name of the legacy support folder: the name of the .app that is started (exports before
+    /// the fixed per-game home built the app and its support folder with the same name). Before an
+    /// app is known, the game's own name.
     var appSupportName: String {
         if let path = selectedGame?.appPath, !path.isEmpty {
             let name = (path as NSString).lastPathComponent
@@ -890,7 +968,10 @@ final class LauncherState: ObservableObject {
             return false
         }
         appliedSettings = runtimeSettings
-        notify("设置已写入 \(appSupportName)/env.txt")
+        let relative = supportDir.path.hasPrefix(supportRoot.path + "/")
+            ? String(supportDir.path.dropFirst(supportRoot.path.count + 1))
+            : supportDir.lastPathComponent
+        notify("设置已写入 \(relative)/env.txt")
         return true
     }
 
