@@ -6,5 +6,5 @@ enum LauncherIdentity {
     // through make-app.sh. Keep the development fallback at the same patch release.
     static let version = Bundle.main.object(
         forInfoDictionaryKey: "CFBundleShortVersionString"
-    ) as? String ?? "0.1.4"
+    ) as? String ?? "0.1.5"
 }

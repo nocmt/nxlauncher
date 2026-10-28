@@ -6,6 +6,22 @@ Only recorded changes and their validation boundaries are described here. A rele
 
 这里只记录改动与验证边界；出现版本标题不表示资产已经发布。
 
+## 0.1.5 — 2026-10-28
+
+**New icon: the soft red gradient tile now carries a gamepad emblem. / 新图标：柔和红渐变底改为手柄图案。**
+
+Release: [v0.1.5](https://github.com/nocmt/nxlauncher/releases/tag/v0.1.5). Same packaging and signing path: Developer ID signed, hardened runtime, not notarized and not stapled.
+
+Release：[v0.1.5](https://github.com/nocmt/nxlauncher/releases/tag/v0.1.5)。打包与签名方式不变：Developer ID 签名、hardened runtime、未公证、未 staple。
+
+- The emblem changed from the launch triangle to a gamepad: rounded body and grips, plus pad, two round buttons and a short antenna, cut out of a warm-white silhouette so the red tile shows through the controls. The red gradient tile, corner radius and single-emblem composition are unchanged.
+- Nothing else changed; no behavior, dependency or document content differs from 0.1.4 apart from the icon and version.
+
+对应中文：
+
+- 图案由启动三角改为手柄：圆润机身与两侧握把、十字键、两个圆形按键和一小段天线，用暖白剪影挖空，红色底从按键处透出。红渐变底、圆角与单一图案的构图保持不变。
+- 其余无改动；除图标与版本号外，行为、依赖和文档内容与 0.1.4 一致。
+
 ## 0.1.4 — 2026-10-28
 
 **Fixes for the 0.1.3 controls: dependency details stay open, and the segmented choices fit the row. / 修复 0.1.3 控件问题：依赖详情可正常展开，分段控件不再撑满整行。**

@@ -1,8 +1,8 @@
 {
-  "name": "NxLauncher / Launch",
+  "name": "NxLauncher / Gamepad",
   "origin": "Original hand-authored SVG geometry created for NxLauncher; no generated-image API, stock assets, third-party logos, game artwork, embedded bitmap images or external downloads.",
-  "concept": "A vivid red lacquer macOS tile with a soft top-left highlight and one simple, rounded warm-white launch triangle with a soft contact shadow. Deliberately one shape: no layered panels, no bevel rings, no console or company mark.",
-  "reference": "The owner supplied a red rounded-square icon with a soft red gradient and a single rounded emblem, and asked for that background treatment with a simpler, rounder geometry. Only the palette, the corner radius and the one-glyph composition follow it; no shape, character or asset from the reference is traced or embedded.",
+  "concept": "A soft red gradient macOS tile with one warm-white gamepad silhouette: rounded body and two grips, a plus pad, two round action buttons and a short antenna. Shapes are cut from the glyph with a mask so the red tile shows through the controls.",
+  "reference": "The owner supplied two references: a red rounded-square app icon with a soft gradient (palette, corner radius and one-glyph composition) and a small gamepad pictogram (what the emblem should depict). Only those two ideas are followed; no shape, outline, character or asset from either reference is traced, copied or embedded.",
   "sources": [
     "app-icon.svg",
     "build-hero.py",
@@ -20,23 +20,21 @@
     "hero-preview.png": "1600 x 640 local AppKit preview; SVG remains the README asset",
     "icon-sizes.png": "960 x 640 contact sheet; actual 16, 32, 64, 128, 256 pixel renders on light/dark backgrounds"
   },
-  "optical_adjustment": "The triangle is enlarged 1.12x at 16px and 1.05x at 32px by render.swift; the master SVG carries one shared geometry.",
+  "optical_adjustment": "One shared master geometry; the glyph already occupies the optical centre at every size, so no per-size scaling is applied.",
   "palette": {
-    "tileHighlight": "#FF7F70",
-    "tileRed": "#F32A34",
-    "tileShade": "#C40D1B",
-    "launchWhite": "#FFF4F1",
-    "launchWhiteEdge": "#FFD5CF"
+    "tileHighlight": "#FF6E62",
+    "tileRed": "#F5343C",
+    "tileShade": "#CB111D",
+    "glyphWhite": "#FFFFFF",
+    "glyphEdge": "#FFDCD4"
   },
   "typography": "hero.svg uses an editable Avenir Next / Avenir / Trebuchet MS / sans-serif fallback stack. Exact text shapes may vary by GitHub viewer's installed fonts; layout reserves room for fallback metrics.",
   "readme_usage": "![NxLauncher — Your library. A new launch.](docs/brand/hero.svg)",
   "verification": [
-    "Opened the previous ICNS raster before replacement.",
-    "Visually reviewed the 1024px PNG and the 1600px hero.",
-    "16/32px optical correction preserves the triangle silhouette.",
+    "Reviewed the 1024px PNG and the 1600px hero.",
     "Parsed both SVGs as XML and checked they are self-contained.",
     "Decoded ICNS representations and checked their dimensions and alpha.",
-    "Simplified revision: reviewed the owner's reference, then reviewed the 1024px PNG and the actual 16/32/64/128/256px contact sheet on light and dark backgrounds; the triangle stays legible at 16px."
+    "Gamepad revision: opened the owner's two references, then reviewed the 1024px PNG and the actual 16/32/64/128/256px contact sheet on light and dark backgrounds; the pad silhouette, plus pad and buttons stay readable at 16px."
   ],
-  "revision": "Simplified geometry at the owner's request: one rounded launch triangle on a soft red gradient, replacing the layered portal. Warm-neutral banner background so the red tile reads as the subject. Still entirely original; no reference asset is embedded."
+  "revision": "Emblem changed from a launch triangle to a gamepad at the owner's request, keeping the soft red gradient tile and single-glyph composition. Still entirely original; no reference asset is embedded."
 }
