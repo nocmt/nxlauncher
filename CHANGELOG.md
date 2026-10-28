@@ -6,6 +6,52 @@ Only recorded changes and their validation boundaries are described here. A rele
 
 这里只记录改动与验证边界；出现版本标题不表示资产已经发布。
 
+## 0.1.6 — 2026-10-28
+
+**Gamepad icon in three styles with a settings picker, plus a cleaner workspace and home page. / 三种手柄图标与设置页图标选择，并清理工作区与首页排版。**
+
+Release: [v0.1.6](https://github.com/nocmt/nxlauncher/releases/tag/v0.1.6). The release is a **signed and notarized DMG**: Developer ID signature, hardened runtime, secure timestamp, and the notarization ticket stapled to the image, so Gatekeeper accepts it on other Macs without a first-launch round-trip. It is also the first release published as a normal release rather than a prerelease, so its notes appear on the repository's Releases page.
+
+Release：[v0.1.6](https://github.com/nocmt/nxlauncher/releases/tag/v0.1.6)。发布物是**签名并已公证的 DMG**：Developer ID 签名、hardened runtime、安全时间戳，公证票据已盖章到映像，因此其他 Mac 上 Gatekeeper 可直接放行，无需首次联网换取记录。这也是首个以正式发布（非 prerelease）方式发布的版本，说明会显示在仓库的 Releases 页。
+
+### Distribution / 分发方式
+
+- Only a DMG is produced. `stapler` cannot attach a ticket to a ZIP and `notarytool` rejects a bare `.app`, so the DMG is the container that can carry a stapled ticket. A ZIP would still work online but could be blocked offline on first launch.
+- `Scripts/make-dmg.sh` builds the image with the usual Applications drop link and signs it with a secure timestamp; `Scripts/verify-release.sh` now accepts `.app`, `.zip` and `.dmg`, mounting an image read-only and reporting the ticket state.
+- Nested signing retries Apple's timestamp server a few times on transient failures, which previously aborted a whole build.
+- The manifest records `timestamp: secure`, `notarized: true` and `stapled: true` alongside the DMG size and SHA-256; the notary profile name is passed on the command line and never stored in the repository.
+
+对应中文：
+
+- 只产出 DMG。`stapler` 无法给 ZIP 盖章，`notarytool` 又不接受裸 `.app`，所以只有 DMG 能携带盖章票据。ZIP 联网时可用，但首次启动在断网时可能被拦截。
+- `Scripts/make-dmg.sh` 生成带“应用程序”快捷方式的映像并用安全时间戳签名；`Scripts/verify-release.sh` 现在支持 `.app`/`.zip`/`.dmg`，会只读挂载映像并报告票据状态。
+- 嵌套签名遇到 Apple 时间戳服务偶发失败会自动重试，此前一次抖动会让整轮构建失败。
+- 清单记录 `timestamp: secure`、`notarized: true`、`stapled: true` 以及 DMG 大小与 SHA-256；公证 profile 名只通过命令行传入，从不写入仓库。
+
+### Icon / 图标
+
+- The emblem is a gamepad in three styles: **实心 (solid)** filled silhouette with the controls cut through to the red tile, **描边 (outline)** rim only with solid controls, and **复古 (retro)** a flat panel with minimal symbols. Solid is the app icon and the default.
+- All three share one silhouette box centred on the tile (512,512), so switching styles does not make the icon jump. The pad is 534×362 instead of the earlier 282-high shape that sat low, and the bottom recess is shallow rather than a deep notch.
+- General settings gained an **图标** row with three previews. Choosing one stores the preference and changes the running app's Dock and app-switcher icon. It cannot change the bundle icon that Finder and Launchpad read, because rewriting the signed bundle would break its signature; the sheet says so.
+
+对应中文：
+
+- 图案改为手柄，共三款：**实心**（暖白实心、控件挖空透红）、**描边**（只画轮廓、控件实心）、**复古**（扁平面板 + 极简符号）。实心为应用图标与默认项。
+- 三款共用同一轮廓并以格子中心 (512,512) 对齐，切换风格不会跳位。手柄尺寸为 534×362，取代此前仅 282 高、整体偏下的形状，底部凹口也由深槽改浅。
+- 通用设置新增 **图标** 一行，含三个预览。选择后写入偏好并立即改变运行中 App 的 Dock 与应用切换器图标。Finder 与启动台读取的包内图标无法在运行时改写（会破坏签名），界面已注明。
+
+### Workspace and home page / 工作区与首页
+
+- The per-game settings no longer nest a panel, a segmented track and a cell inside the card; the controls now sit directly on the card, matching the lighter 0.1.2 layout.
+- The build-log header uses a hairline instead of a filled grey band, while the whole row stays clickable.
+- Home game cards show the artwork alone with a name and one status line; the duplicate "待编译" badge on the artwork and the "尚未读取版本" line are gone. Placeholder artwork is smaller and quieter. 外观 uses the same segmented control as the game settings.
+
+对应中文：
+
+- 游戏设置不再在卡片内嵌套面板、分段轨道和选中格，控件直接放在卡片上，回到 0.1.2 那种更轻的层次。
+- 构建日志标题改为细线分隔而非整条灰底，整行仍可点击。
+- 首页游戏卡片只显示封面、名称与一行状态；去掉封面上重复的“待编译”胶囊和“尚未读取版本”一行。占位图形更小更淡。外观改为与游戏设置一致的分段控件。
+
 ## 0.1.5 — 2026-10-28
 
 **New icon: the soft red gradient tile now carries a gamepad emblem. / 新图标：柔和红渐变底改为手柄图案。**

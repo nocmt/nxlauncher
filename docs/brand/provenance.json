@@ -1,26 +1,37 @@
 {
   "name": "NxLauncher / Gamepad",
   "origin": "Original hand-authored SVG geometry created for NxLauncher; no generated-image API, stock assets, third-party logos, game artwork, embedded bitmap images or external downloads.",
-  "concept": "A soft red gradient macOS tile with one warm-white gamepad silhouette: rounded body and two grips, a plus pad, two round action buttons and a short antenna. Shapes are cut from the glyph with a mask so the red tile shows through the controls.",
-  "reference": "The owner supplied two references: a red rounded-square app icon with a soft gradient (palette, corner radius and one-glyph composition) and a small gamepad pictogram (what the emblem should depict). Only those two ideas are followed; no shape, outline, character or asset from either reference is traced, copied or embedded.",
+  "concept": "A soft red gradient macOS tile carrying one warm-white gamepad. The pad is a single closed silhouette — flat top, swept shoulders, two grips and a shallow middle recess — so there is no seam between body and grips. The plus pad and the two round buttons are cut out of it, letting the red tile show through.",
+  "reference": "The owner supplied a red rounded-square app icon (palette, corner radius, one-emblem composition) and a small gamepad pictogram (what the emblem depicts), then asked for a gamepad shape. Only those ideas are followed; no outline, shape, character or asset from either reference is traced, copied or embedded.",
+  "styles": {
+    "solid": "Filled silhouette with the controls cut through to the tile. This is the app icon and the default Dock choice.",
+    "outline": "Only the rim is drawn, with solid controls inside it.",
+    "retro": "A single flat rounded panel with minimal controls: plus pad, two buttons and two short speaker slots."
+  },
   "sources": [
-    "app-icon.svg",
+    "build-icon-variants.py",
     "build-hero.py",
-    "render.swift"
+    "build-icons.py",
+    "render.swift",
+    "app-icon.svg",
+    "app-icon-outline.svg",
+    "app-icon-retro.svg"
   ],
   "rebuild_from_repository_root": [
+    "python3 docs/brand/build-icon-variants.py",
     "python3 docs/brand/build-hero.py",
-    "swift docs/brand/render.swift"
+    "python3 docs/brand/build-icons.py"
   ],
   "requirements": "macOS with Swift/AppKit, Python 3 standard library, system iconutil. No pip packages, API keys, network, or separate font downloads required.",
   "outputs": {
     "../../Resources/AppIcon.png": "1024 x 1024 RGBA PNG, transparent outside the rounded tile",
     "../../Resources/AppIcon.icns": "Complete 16, 32, 128, 256, 512 point icon family at 1x and 2x; 10 representations spanning 16-1024 pixels",
+    "../../Resources/IconVariants/": "solid.png, outline.png and retro.png at 256px: the Dock-icon choices the settings shows",
     "hero.svg": "1600 x 640 standalone static SVG; inline gradients and original vectors; no scripts, foreignObject, external images, filters, or external font resources",
     "hero-preview.png": "1600 x 640 local AppKit preview; SVG remains the README asset",
     "icon-sizes.png": "960 x 640 contact sheet; actual 16, 32, 64, 128, 256 pixel renders on light/dark backgrounds"
   },
-  "optical_adjustment": "One shared master geometry; the glyph already occupies the optical centre at every size, so no per-size scaling is applied.",
+  "optical_adjustment": "All three gamepad styles share the same silhouette box and centre it on the tile (512, 512), so switching styles in the settings does not make the icon jump. No per-size scaling is applied; the pad is large enough to stay readable at 16px.",
   "palette": {
     "tileHighlight": "#FF6E62",
     "tileRed": "#F5343C",
@@ -31,10 +42,11 @@
   "typography": "hero.svg uses an editable Avenir Next / Avenir / Trebuchet MS / sans-serif fallback stack. Exact text shapes may vary by GitHub viewer's installed fonts; layout reserves room for fallback metrics.",
   "readme_usage": "![NxLauncher — Your library. A new launch.](docs/brand/hero.svg)",
   "verification": [
-    "Reviewed the 1024px PNG and the 1600px hero.",
-    "Parsed both SVGs as XML and checked they are self-contained.",
+    "Reviewed the 1024px PNG, the three Dock variants and the 1600px hero.",
+    "Parsed every SVG as XML and checked it is self-contained.",
     "Decoded ICNS representations and checked their dimensions and alpha.",
-    "Gamepad revision: opened the owner's two references, then reviewed the 1024px PNG and the actual 16/32/64/128/256px contact sheet on light and dark backgrounds; the pad silhouette, plus pad and buttons stay readable at 16px."
+    "Gamepad revision: opened the owner's references, then reviewed the 1024px PNG and the actual 16/32/64/128/256px contact sheet on light and dark backgrounds; the pad, plus pad and buttons stay readable at 16px.",
+    "Settings integration: confirmed the three previews render in the general-settings sheet, that choosing 描边 persists to UserDefaults and changes the running app's Dock icon, and that the packaged bundle contains all three variant PNGs."
   ],
-  "revision": "Emblem changed from a launch triangle to a gamepad at the owner's request, keeping the soft red gradient tile and single-glyph composition. Still entirely original; no reference asset is embedded."
+  "revision": "Emblem changed to a gamepad, then re-proportioned: the silhouette is now 534 x 362 and centred on the tile instead of sitting low with small grips, and the pads gained a shallow recess instead of the deep notch. The retro style replaced an earlier gloss style that was too similar to solid at small sizes. The settings can switch between the three styles; only the running app's Dock icon changes, since rewriting the signed bundle would break its signature."
 }

@@ -127,8 +127,11 @@ def audit(root, kind='payload'):
             allowed = {'Contents/Info.plist', 'Contents/MacOS/NxLauncher'}
             resources = {'AppIcon.png', 'AppIcon.icns', 'LICENSE', 'THIRD_PARTY_NOTICES.md',
                          'nxlauncher-home.tgz', 'release-signing.json'}
+            # The Dock-icon choices the settings shows; names are fixed, never user input.
+            variants = {'Contents/Resources/IconVariants/' + name
+                        for name in ('solid.png', 'outline.png', 'retro.png')}
             if not (rel in allowed or rel.startswith('Contents/_CodeSignature/') or
-                    rel.startswith('Contents/Resources/licenses/') or
+                    rel.startswith('Contents/Resources/licenses/') or rel in variants or
                     rel in {'Contents/Resources/' + name for name in resources}):
                 findings.append(f'not on app allowlist: {rel}')
         data = path.read_bytes()
@@ -137,7 +140,10 @@ def audit(root, kind='payload'):
     if kind == 'app':
         for rel in ('Contents/MacOS/NxLauncher', 'Contents/Info.plist', 'Contents/Resources/AppIcon.png',
                     'Contents/Resources/AppIcon.icns', 'Contents/Resources/LICENSE',
-                    'Contents/Resources/THIRD_PARTY_NOTICES.md', 'Contents/Resources/nxlauncher-home.tgz'):
+                    'Contents/Resources/THIRD_PARTY_NOTICES.md', 'Contents/Resources/nxlauncher-home.tgz',
+                    'Contents/Resources/IconVariants/solid.png',
+                    'Contents/Resources/IconVariants/outline.png',
+                    'Contents/Resources/IconVariants/retro.png'):
             if not (root / rel).is_file(): findings.append(f'missing app file: {rel}')
     return sorted(set(findings)), entries
 

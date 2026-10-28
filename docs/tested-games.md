@@ -2,9 +2,9 @@
 
 [English README](../README.md) · [中文 README](../README.zh-CN.md) · [排障](troubleshooting.md)
 
-**记录核对日期：2026-10-28。以下只依据已有本地文档、构建日志与产物元数据，不是上游 profile 清单。最终 0.1.5 基线下，三款均未重新游玩验证。**
+**记录核对日期：2026-10-28。以下只依据已有本地文档、构建日志与产物元数据，不是上游 profile 清单。最终 0.1.6 基线下，三款均未重新游玩验证。**
 
-**Reviewed 2026-10-28. This ledger uses existing local documents, build logs and artifact metadata, not the upstream profile list. None of these games has been revalidated through gameplay on the final 0.1.5 baseline.**
+**Reviewed 2026-10-28. This ledger uses existing local documents, build logs and artifact metadata, not the upstream profile list. None of these games has been revalidated through gameplay on the final 0.1.6 baseline.**
 
 ## 如何理解验证层级 / Evidence levels
 
@@ -17,7 +17,7 @@
 
 ## 成功打包清单 / Historical successful packaging
 
-| 游戏 / Game | Title ID | 已核对版本 / Version | 打包证据 / Packaging | 运行证据 / Runtime | 0.1.5 |
+| 游戏 / Game | Title ID | 已核对版本 / Version | 打包证据 / Packaging | 运行证据 / Runtime | 0.1.6 |
 |---|---|---|---|---|---|
 | 塞尔达传说：智慧的再现 / The Legend of Zelda: Echoes of Wisdom | `01008CF01BAAC000` | **1.1.0 / `v196608`** | Mac 导出和 IPA 完成记录 / Mac export and IPA completion | 用户确认正常 Mac 打包游玩；另有有限操作／画面验证 / User-confirmed Mac gameplay and bounded input/rendering checks | **未重新游玩 / Not replayed** |
 | 塞尔达传说：旷野之息 / The Legend of Zelda: Breath of the Wild | `01007EF00011E000` | **1.9.0 / `v1114112`** | nxnative IPA 完成；文档记录历史 Mac 导出 / nxnative IPA completion and documented historical Mac export | 独立 nxnative Mac 日志到第 2100 帧，SIGTERM 正常退出；有限运行 / Separate nxnative Mac log to frame 2100, graceful SIGTERM; limited execution | **未重新游玩 / Not replayed** |
@@ -37,7 +37,7 @@ No unsupported titles are added. Frame logs are not relabeled as title-screen ob
 
 本地核对还包括 `game/塞尔达传说-智慧的再现/01008CF01BAAC000_build/logs/build_ipa.log`：标注 1.1.0，使用 `extract/v196608`，有 `done` 结束记录。保留 App 的 `Contents/Info.plist` 版本为 1.1.0，bundle ID 为 `org.nxnative.01008cf01baac000.mac`。
 
-The checked IPA log explicitly completes version 1.1.0 using `v196608`; retained Mac metadata identifies the nxnative bundle. The linked documents provide the strongest claim here: user-confirmed normal Mac packaging/play, alongside bounded rendering/input checks. Those historical binaries and upstream worktrees differ from the final 0.1.5 integration target. No whole-game, sustained-performance or iOS-device claim is made.
+The checked IPA log explicitly completes version 1.1.0 using `v196608`; retained Mac metadata identifies the nxnative bundle. The linked documents provide the strongest claim here: user-confirmed normal Mac packaging/play, alongside bounded rendering/input checks. Those historical binaries and upstream worktrees differ from the final 0.1.6 integration target. No whole-game, sustained-performance or iOS-device claim is made.
 
 ## 旷野之息 / Breath of the Wild
 

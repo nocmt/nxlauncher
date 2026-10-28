@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">NxLauncher — launch</title>
+  <desc id="desc">Original vector artwork. A soft vivid-red rounded tile with one rounded warm-white launch triangle. No third-party logo or game artwork.</desc>
+  <defs>
+    <linearGradient id="tile" x1=".1" y1="0" x2=".9" y2="1">
+      <stop stop-color="#ff7f70"/><stop offset=".42" stop-color="#f32a34"/><stop offset=".78" stop-color="#e01322"/><stop offset="1" stop-color="#c40d1b"/>
+    </linearGradient>
+    <radialGradient id="wash" cx=".28" cy=".06" r=".9">
+      <stop stop-color="#fff2ee" stop-opacity=".34"/><stop offset=".58" stop-color="#ffd6d1" stop-opacity=".07"/><stop offset="1" stop-color="#a80c16" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#fff2ec" stop-opacity=".7"/><stop offset=".45" stop-color="#ffc9c3" stop-opacity=".12"/><stop offset="1" stop-color="#8e0a15" stop-opacity=".3"/>
+    </linearGradient>
+    <linearGradient id="glyph" x1=".2" y1="0" x2=".75" y2="1">
+      <stop stop-color="#ffffff"/><stop offset=".5" stop-color="#fff4f1"/><stop offset="1" stop-color="#ffd5cf"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#ffffff" stop-opacity=".26"/><stop offset=".55" stop-color="#ffffff" stop-opacity=".05"/><stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <clipPath id="tileClip"><rect x="100" y="100" width="824" height="824" rx="200"/></clipPath>
+  </defs>
+  <!-- The 100px safe margin follows the optical size of macOS app tiles. -->
+  <rect x="108" y="120" width="808" height="808" rx="194" fill="#5c020c" opacity=".13"/>
+  <rect x="103" y="110" width="818" height="818" rx="198" fill="#5c020c" opacity=".2"/>
+  <rect x="100" y="100" width="824" height="824" rx="200" fill="url(#tile)"/>
+  <rect x="100" y="100" width="824" height="824" rx="200" fill="url(#wash)"/>
+  <g clip-path="url(#tileClip)">
+    <rect x="100" y="100" width="824" height="420" fill="url(#gloss)"/>
+  </g>
+  <rect x="101.5" y="101.5" width="821" height="821" rx="198.5" fill="none" stroke="url(#rim)" stroke-width="3"/>
+  <!-- One simple, rounded geometry: the launch key. -->
+  <ellipse cx="512" cy="668" rx="128" ry="17" fill="#6d030d" opacity=".15"/>
+  <g id="launch-key">
+    <path d="M400 370 L400 654 L630 512 Z" fill="#8e0a14" opacity=".16" transform="translate(1 10)" stroke="#8e0a14" stroke-width="86" stroke-linejoin="round"/>
+    <path d="M400 370 L400 654 L630 512 Z" fill="url(#glyph)" stroke="url(#glyph)" stroke-width="86" stroke-linejoin="round"/>
+  </g>
+</svg>

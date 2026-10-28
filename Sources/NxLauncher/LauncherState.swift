@@ -123,6 +123,9 @@ final class LauncherState: ObservableObject {
     @Published var appearance: Appearance = Appearance(
         rawValue: UserDefaults.standard.string(forKey: "appearance") ?? "") ?? .system
 
+    /// Which bundled icon the running app shows in the Dock and the app switcher.
+    @Published var iconStyle: AppIconStyle = AppIconStyle.saved()
+
     // --- where the tools are ---
     /// The folder the pipeline runs in: the repository (when the launcher runs from the sources),
     /// or the copy the app unpacked from the archive it carries.
@@ -807,6 +810,22 @@ final class LauncherState: ObservableObject {
     /// The appearance was changed in the window: remember it for the next time.
     func appearanceChanged() {
         UserDefaults.standard.set(appearance.rawValue, forKey: "appearance")
+    }
+
+    func iconStyleChanged() {
+        UserDefaults.standard.set(iconStyle.rawValue, forKey: AppIconStyle.defaultsKey)
+        applyIconStyle()
+    }
+
+    /// Re-applies the saved icon to the running app. Development builds read the repository copy,
+    /// packaged builds read the app bundle.
+    func applyIconStyle() {
+        iconStyle.apply(in: .main, fallbackDirectory: home.appendingPathComponent("Resources"))
+    }
+
+    /// The preview shown next to an icon choice in the settings.
+    func iconPreview(_ style: AppIconStyle) -> NSImage? {
+        style.image(in: .main, fallbackDirectory: home.appendingPathComponent("Resources"))
     }
 
     // --- the runs ---

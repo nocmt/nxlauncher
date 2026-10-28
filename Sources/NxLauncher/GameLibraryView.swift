@@ -132,25 +132,25 @@ struct GameLibraryView: View {
             state.toggleGameSelection(game)
         } label: {
             VStack(alignment: .leading, spacing: 9) {
-                GameArtwork(path: game.icon)
+                GameArtwork(path: game.icon, glyphSize: 0.26)
                     .aspectRatio(1, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 17))
-                    .overlay(alignment: .bottomLeading) {
-                        Text(game.built ? "已编译" : "待编译")
-                            .font(.system(size: 10, weight: .semibold))
-                            .padding(.horizontal, 8).padding(.vertical, 4)
-                            .background(.regularMaterial, in: Capsule()).padding(10)
-                    }
                     .overlay {
                         RoundedRectangle(cornerRadius: 17)
                             .strokeBorder(state.selectedGameID == game.id ? DS.accent : DS.cardStroke,
                                           lineWidth: 3)
                     }
+                // One line for identity, one for status. The build state used to sit on the
+                // artwork as well and the line below said "尚未读取版本", so an unbuilt game
+                // was labelled twice; the status now carries the version when there is one.
                 Text(game.name.isEmpty ? URL(fileURLWithPath: game.folder).lastPathComponent : game.name)
                     .font(.system(size: 13, weight: .semibold)).lineLimit(2)
                     .frame(height: 34, alignment: .topLeading)
-                Text(game.version.isEmpty ? "尚未读取版本" : game.version)
-                    .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                HStack(spacing: 5) {
+                    Circle().fill(game.built ? DS.ok : DS.idle).frame(width: 6, height: 6)
+                    Text(game.built ? (game.version.isEmpty ? "已编译" : game.version) : "尚未编译")
+                        .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                }
             }
             .contentShape(Rectangle())
         }
@@ -163,7 +163,7 @@ struct GameLibraryView: View {
             Divider()
             Button("从游戏库移除…", role: .destructive) { removal = game }
         }
-        .accessibilityLabel("\(game.name)，\(game.built ? "已编译" : "待编译")")
+        .accessibilityLabel("\(game.name)，\(game.built ? "已编译" : "尚未编译")")
     }
 
     private var addTile: some View {
@@ -236,14 +236,21 @@ struct GameLibraryView: View {
 
 struct GameArtwork: View {
     var path: String
+    /// The placeholder glyph's size as a fraction of the shorter side. The tile is large, so the
+    /// default is deliberately small: a big bright controller in every card looked like artwork
+    /// the user had supplied rather than a placeholder.
+    var glyphSize: CGFloat = 0.3
+
     var body: some View {
         GeometryReader { geo in
             if !path.isEmpty, let image = NSImage(contentsOfFile: path) {
                 Image(nsImage: image).resizable().scaledToFill().frame(width: geo.size.width, height: geo.size.height).clipped()
             } else {
                 ZStack {
-                    LinearGradient(colors: [DS.accent.opacity(0.18), DS.card], startPoint: .topLeading, endPoint: .bottomTrailing)
-                    Image(systemName: "gamecontroller").font(.system(size: min(geo.size.width, geo.size.height) * 0.3, weight: .light)).foregroundStyle(DS.accent)
+                    LinearGradient(colors: [DS.accent.opacity(0.10), DS.card], startPoint: .topLeading, endPoint: .bottomTrailing)
+                    Image(systemName: "gamecontroller")
+                        .font(.system(size: min(geo.size.width, geo.size.height) * glyphSize, weight: .light))
+                        .foregroundStyle(DS.accent.opacity(0.55))
                 }
             }
         }

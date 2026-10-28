@@ -34,6 +34,7 @@ struct ContentView: View {
             }
             .onAppear {
                 state.loadEnv()          // what is really in effect, from env.txt
+                state.applyIconStyle()   // the saved icon choice, for the Dock
                 // the app carries its own tools (in an archive): unpack them before anything runs
                 state.prepare {
                     state.checkDependencies()
@@ -86,7 +87,7 @@ struct ContentView: View {
                     if state.busy { progressStrip }
                     gameData
                     settings
-                    logSection
+                    logSection.padding(.bottom, 4)
                 }
                 .padding(24)
                 .frame(maxWidth: 1120, alignment: .leading).frame(maxWidth: .infinity)
@@ -269,25 +270,24 @@ struct ContentView: View {
 
     // MARK: - the settings
 
+    /// The three per-game choices sit directly on the card, as in 0.1.2: a nested panel plus a
+    /// segmented track plus a selected cell read as four stacked boxes and looked heavy.
     private var settings: some View {
         Card(title: "游戏设置", systemImage: "slider.horizontal.3") {
             ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: 24) {
+                HStack(alignment: .top, spacing: 28) {
                     languageChoice
                     fpsChoice
                     modeChoice
                     Spacer(minLength: 0)
                 }
                 VStack(alignment: .leading, spacing: 14) {
-                    HStack(alignment: .top, spacing: 24) { languageChoice; fpsChoice }
+                    HStack(alignment: .top, spacing: 28) { languageChoice; fpsChoice }
                     modeChoice
                 }
                 VStack(alignment: .leading, spacing: 14) { languageChoice; fpsChoice; modeChoice }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
             .disabled(state.busy)
-            .background(DS.row, in: RoundedRectangle(cornerRadius: DS.small, style: .continuous))
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -343,11 +343,60 @@ struct ContentView: View {
             keysSetting
             Divider()
             settingRow("外观") {
-                Picker("", selection: $state.appearance) {
-                    ForEach(LauncherState.Appearance.allCases) { a in Text(a.rawValue).tag(a) }
-                }.labelsHidden().frame(width: 180)
+                SegmentedChoice(options: LauncherState.Appearance.allCases.map {
+                    SegmentedChoice<LauncherState.Appearance>.Option(value: $0, label: $0.rawValue)
+                }, selection: $state.appearance, optionWidth: 74)
                     .onChange(of: state.appearance) { _, _ in state.appearanceChanged() }
             }
+            Divider()
+            settingRow("图标") { iconChoices }
+        }
+    }
+
+    /// Three previews of the bundled icons. The choice changes the running app's Dock icon; the
+    /// bundle file that Finder and Launchpad read cannot change without breaking the signature.
+    private var iconChoices: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                ForEach(AppIconStyle.allCases) { style in
+                    let selected = state.iconStyle == style
+                    Button {
+                        state.iconStyle = style
+                        state.iconStyleChanged()
+                    } label: {
+                        VStack(spacing: 5) {
+                            if let image = state.iconPreview(style) {
+                                Image(nsImage: image).resizable().interpolation(.high)
+                                    .frame(width: 34, height: 34)
+                            } else {
+                                RoundedRectangle(cornerRadius: 8).fill(DS.quiet)
+                                    .frame(width: 34, height: 34)
+                            }
+                            Text(style.label)
+                                .font(.system(size: 10, weight: selected ? .semibold : .regular))
+                                .foregroundStyle(selected ? Color.primary : Color.secondary)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .frame(minWidth: 62)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(selected ? DS.card : Color.clear)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(selected ? DS.accent.opacity(0.5) : DS.hairline, lineWidth: 1)
+                    )
+                    .accessibilityAddTraits(selected ? [.isSelected] : [])
+                    .help("把 \(style.label)图标设为运行中的 Dock 图标")
+                }
+                Spacer(minLength: 0)
+            }
+            Text("只改变运行中的 Dock 与 App 切换器图标；Finder 和启动台仍显示应用包内图标。")
+                .font(.system(size: 10)).foregroundStyle(.secondary)
         }
     }
 
@@ -558,11 +607,15 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 12)
-                .padding(.vertical, 10)
+                .padding(.vertical, 9)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .background(RoundedRectangle(cornerRadius: DS.small, style: .continuous).fill(DS.quiet))
+            // A hairline, not a filled band: the header still spans the card for a large click
+            // target, but it no longer paints a grey strip across the page.
+            .overlay(alignment: .top) {
+                Rectangle().fill(DS.hairline).frame(height: 1)
+            }
             .accessibilityLabel(showLog ? "收起构建日志" : "展开构建日志")
             if showLog { log }
         }

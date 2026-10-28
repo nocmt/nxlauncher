@@ -1,4 +1,4 @@
-# NxLauncher 发布流程（0.1.5）
+# NxLauncher 发布流程（0.1.6）
 
 发布有两条路径：本机用自己的 Developer ID 构建并手动上传；标签 CI 自动构建 **ad-hoc 签名、未公证、未 staple** 的 GitHub prerelease。两者不能混称。0.1.2 至 0.1.5 均用本机 Developer ID 签名、手动创建 prerelease 并上传三个资产；公开前的历史重写见文末“History rewrite (2026-10-28)”。CI 面向后续标签自动发布；已经存在的同名 Release 会被跳过，不会被覆盖。
 
@@ -26,33 +26,36 @@ python3 -m unittest discover -s Tests -v
 export NXLAUNCHER_PYTHON_ROOT="$HOME/.local/share/uv/python/cpython-3.13.15-macos-aarch64-none"
 # 按本机 security find-identity 输出填写自己的证书，不要复制其他发布者身份。
 export DEVELOPER_ID='Developer ID Application: YOUR NAME (TEAMID)'
-export CODESIGN_TIMESTAMP=none
+export CODESIGN_TIMESTAMP=secure
 version=$(tr -d '\n' < VERSION)
-zip="$PWD/dist/NxLauncher-${version}-macos-arm64.zip"
-bash Scripts/make-release.sh "$zip" --identity "$DEVELOPER_ID" --python "$NXLAUNCHER_PYTHON_ROOT"
+dmg="$PWD/dist/NxLauncher-${version}-macos-arm64.dmg"
+bash Scripts/make-release.sh "$dmg" --identity "$DEVELOPER_ID" \
+  --python "$NXLAUNCHER_PYTHON_ROOT" --notary-profile YOUR_PROFILE
 ```
 
-`Scripts/make-release.sh [zip] [--identity ID] [--python ROOT] [--package-only]` 是完整发布入口：调用 `make-app.sh` 构建 release Swift app，后者调用 `make-home-archive.sh` 导出已核验的补丁源码、Tools、fonts、wheels 和 Python；随后在 staging 解包 payload，修正安装机路径、核对许可证和 DLL/wheel 版本、由内到外重签 Mach-O、重新生成 wheel `RECORD`，审计 payload 和 app，再打 ZIP。`--package-only` 只对明确指定的已有 app 副本重新打包，CI 不使用它，也不使用本地旧 app 或缓存 payload。
+`Scripts/make-release.sh [dmg] [--identity ID] [--python ROOT] [--notary-profile NAME] [--package-only]` 是完整发布入口：调用 `make-app.sh` 构建 release Swift app，后者调用 `make-home-archive.sh` 导出已核验的补丁源码、Tools、fonts、wheels 和 Python；随后在 staging 解包 payload，修正安装机路径、核对许可证和 DLL/wheel 版本、由内到外重签 Mach-O、重新生成 wheel `RECORD`，审计 payload 和 app，再打 DMG 并签名；给出 `--notary-profile` 时提交公证并盖章。`--package-only` 只对明确指定的已有 app 副本重新打包，CI 不使用它，也不使用本地旧 app 或缓存 payload。
+
+**只发布 DMG，不发布 ZIP。** 公证票据只能盖在 `.app`、`.pkg` 或 `.dmg` 上，`stapler` 无法处理 ZIP；而 `notarytool` 又不接受裸 `.app`。因此唯一能携带票据的分发容器是 DMG。若发布 ZIP，用户首次启动仍要联网向 Apple 换取公证记录，断网时可能被拦截。
 
 `--python`/`NXLAUNCHER_PYTHON_ROOT` 必须贯穿归档和发布步骤。为兼容仍使用 uv 发现逻辑的旧脚本，CI 将安装位置设为 `$HOME/.local/share/uv/python/cpython-3.13.15-macos-aarch64-none`，并显式传递 `--python` 和环境变量。没有写死发布者 home 或 `/Users/runner` 路径。测试依赖装在独立 venv，不污染要打包的 Python。
 
-ZIP 同文件系统原子替换；已有 app 则由 `make-app.sh` 使用 macOS `RENAME_SWAP` 原子交换。失败时保留旧输出，不先删除旧包。ZIP 与两个 sidecar 的发布不是一个多文件原子事务，因此上传前必须重新核对三者摘要。
+DMG 同文件系统原子替换；已有 app 则由 `make-app.sh` 使用 macOS `RENAME_SWAP` 原子交换。失败时保留旧输出，不先删除旧包。DMG 与两个 sidecar 的发布不是一个多文件原子事务，因此上传前必须重新核对三者摘要。
 
 产物命名严格为：
 
 ```text
-NxLauncher-0.1.5-macos-arm64.zip
-NxLauncher-0.1.5-macos-arm64.zip.sha256
-NxLauncher-0.1.5-macos-arm64.zip.manifest.json
+NxLauncher-0.1.6-macos-arm64.dmg
+NxLauncher-0.1.6-macos-arm64.dmg.sha256
+NxLauncher-0.1.6-macos-arm64.dmg.manifest.json
 ```
 
-不要误用没有 `.zip` 中缀的 manifest 文件名。脚本旧版本生成的 `.sha256` 可能含已清理的 staging 绝对路径；上传前核对原摘要、ZIP 和 manifest 一致后，用 ZIP 文件名重新生成便携 sidecar，再在产物目录运行 `shasum -a 256 --check`。CI 会自动验证并规范该 sidecar，不改签名 ZIP 字节。
+manifest 的 `notarized` 与 `stapled` 必须为 `true`，`timestamp` 为 `secure`；这三项是判断产物能否离线通过 Gatekeeper 的依据，不能只凭 DMG 文件名推断。
 
 ```sh
-# 在 dist 内执行，使摘要文件只记录公开 ZIP 文件名。
-(cd dist && shasum -a 256 "NxLauncher-${version}-macos-arm64.zip" \
-  > "NxLauncher-${version}-macos-arm64.zip.sha256")
-(cd dist && shasum -a 256 --check "NxLauncher-${version}-macos-arm64.zip.sha256")
+# 在 dist 内执行，使摘要文件只记录公开 DMG 文件名。
+(cd dist && shasum -a 256 "NxLauncher-${version}-macos-arm64.dmg" \
+  > "NxLauncher-${version}-macos-arm64.dmg.sha256")
+(cd dist && shasum -a 256 --check "NxLauncher-${version}-macos-arm64.dmg.sha256")
 ```
 
 ## 签名等级与审计范围
@@ -89,22 +92,36 @@ gh workflow run release.yml -f tag="$tag" -f source_sha="$sha"
 
 同一标签的运行串行排队，不取消已进行的构建。**如果同名 Release 已存在，创建会失败，不覆盖手动 Developer ID 资产，不执行 `--clobber`。** 如果一次发布因网络中断留下 draft 或部分资产，先检查 Release 的状态、签名类型和摘要，再由发布者处理该 draft；直接重跑不会静默覆盖它。
 
-## 本次 0.1.5 手动 Developer ID 上传
+## 本次 0.1.6 手动 Developer ID 上传
 
-本机产物已签名但未公证；发布说明必须写明 “Developer ID signed; not notarized; not stapled”，并核对实际证书身份。发布前从最终 ZIP 解包，运行 app audit 和 `codesign --verify --deep --strict`，核验 manifest 的版本/摘要/签名身份，确认对应源码已提交，标签指向该提交。只上传下面列出的三个公开产物。
+0.1.6 及以后的本机产物已公证并盖章；发布说明写明 “Developer ID signed and notarized”，并核对实际证书身份。发布前挂载最终 DMG，运行 app audit、`codesign --verify --deep --strict` 与 `xcrun stapler validate`，核验 manifest 的 `notarized`/`stapled`/`timestamp`/摘要/签名身份，确认对应源码已提交，标签指向该提交。只上传下面列出的三个公开产物。
+
+```sh
+# 挂载并核对，不启动应用。
+hdiutil attach "dist/NxLauncher-${version}-macos-arm64.dmg" -readonly -nobrowse
+bash Scripts/verify-release.sh "dist/NxLauncher-${version}-macos-arm64.dmg"
+spctl -a -t open --context context:primary-signature -v "dist/NxLauncher-${version}-macos-arm64.dmg"
+hdiutil detach "/Volumes/NxLauncher"
+```
 
 ```sh
 version=$(tr -d '\n' < VERSION)
 tag="v$version"
 sha=$(git rev-parse "refs/tags/$tag^{commit}")
 gh release create "$tag" \
-  "dist/NxLauncher-${version}-macos-arm64.zip" \
-  "dist/NxLauncher-${version}-macos-arm64.zip.sha256" \
-  "dist/NxLauncher-${version}-macos-arm64.zip.manifest.json" \
-  --verify-tag --target "$sha" --prerelease --latest=false \
-  --title "NxLauncher $version — Developer ID preview (not notarized)" \
-  --notes 'macOS arm64 preview. Developer ID signed; not notarized; not stapled. No games, keys or saves included.'
+  "dist/NxLauncher-${version}-macos-arm64.dmg" \
+  "dist/NxLauncher-${version}-macos-arm64.dmg.sha256" \
+  "dist/NxLauncher-${version}-macos-arm64.dmg.manifest.json" \
+  --verify-tag --target "$sha" \
+  --title "NxLauncher $version" \
+  --notes-file release-notes.txt
 ```
+
+### 为什么不再用 `--prerelease --latest=false`
+
+0.1.2 至 0.1.5 都以 prerelease 发布并带 `--latest=false`。GitHub 不允许把 prerelease 标为 Latest，仓库首页侧栏的 Releases 卡片因此一直是空的，从仓库主页点进去只能看到标签列表——发布说明其实是写好的，但入口不显示内容。发布者手动签名的 Developer ID 构建是本项目的正式分发物，所以从 0.1.6 起按普通 Release 发布，不加 `--prerelease` 和 `--latest=false`，说明才会出现在仓库首页与 Releases 页。未公证、未 staple 的状态写在标题和正文里，不靠 prerelease 标记表达。
+
+CI 的标签自动构建仍使用 `--prerelease --latest=false`：那个产物只是 ad-hoc 签名，不应占据 Latest 位置，也不该与手动签名的正式资产混称。
 
 如果已创建 Release，使用 `gh release upload "$tag"` 并逐一列出上述三个文件；不使用 `dist/*`，不使用 `--clobber` 替换未知资产。为避免标签 CI 先创建 ad-hoc 同名 Release，可在标签尚未推送时先以目标 SHA 创建并上传 **draft**，再推送标签，核验 tag/SHA 后由发布者公开 draft；或者先合并 CI、使用新版本标签开始自动发布。已有 Release 的保护不依赖其是 draft 还是公开状态。
 

@@ -25,7 +25,7 @@
   <svg x="915" y="19" width="602" height="602" viewBox="0 0 1024 1024" aria-labelledby="iconTitle iconDesc">
 
   <title id="iconTitle">NxLauncher — gamepad</title>
-  <desc id="iconDesc">Original vector artwork. A soft red gradient macOS tile with one warm-white gamepad silhouette: rounded body and grips, a plus pad, two round buttons and a short antenna. No third-party logo or game artwork.</desc>
+  <desc id="iconDesc">Original vector artwork. A soft red gradient macOS tile with one chubby warm-white gamepad: rounded body and grips, a plus pad and two round buttons. No third-party logo or game artwork.</desc>
   <defs>
     <linearGradient id="tile" x1=".15" y1="0" x2=".85" y2="1">
       <stop stop-color="#FF6E62"/><stop offset=".42" stop-color="#F5343C"/><stop offset=".78" stop-color="#E01824"/><stop offset="1" stop-color="#CB111D"/>
@@ -37,33 +37,23 @@
       <stop stop-color="#FFF4F0" stop-opacity=".55"/><stop offset=".5" stop-color="#FFC9C3" stop-opacity=".1"/><stop offset="1" stop-color="#8E0A15" stop-opacity=".28"/>
     </linearGradient>
     <linearGradient id="glyph" x1=".18" y1="0" x2=".72" y2="1">
-      <stop stop-color="#FFFFFF"/><stop offset=".58" stop-color="#FFF5F2"/><stop offset="1" stop-color="#FFDCD4"/>
+      <stop stop-color="#FFFFFF"/><stop offset=".6" stop-color="#FFF6F3"/><stop offset="1" stop-color="#FFDCD4"/>
     </linearGradient>
-    <mask id="padMask">
-      <rect width="1024" height="1024" fill="#fff"/>
-      <!-- D-pad: two crossing rounded bars -->
-      <rect x="330" y="452" width="128" height="40" rx="20" fill="#000"/>
-      <rect x="374" y="408" width="40" height="128" rx="20" fill="#000"/>
-      <!-- two round action buttons, clear of the right grip -->
-      <circle cx="588" cy="442" r="19" fill="#000"/>
-      <circle cx="643" cy="442" r="19" fill="#000"/>
+    <mask id="pad" maskUnits="userSpaceOnUse" x="230" y="320" width="564" height="392">
+      <rect x="230" y="320" width="564" height="392" fill="#000"/>
+      <path d="M 380 330 L 640 330 C 708 330 748 368 762 428 C 776 488 784 556 772 606 C 760 656 730 686 694 690 C 658 694 628 672 606 650 C 592 636 578 630 560 630 L 464 630 C 446 630 432 636 418 650 C 396 672 366 694 330 690 C 294 686 264 656 252 606 C 240 556 248 488 262 428 C 276 368 312 330 380 330 Z" fill="#fff"/>
+      <rect x="306" y="462" width="112" height="34" rx="17" fill="#000"/>
+      <rect x="345" y="423" width="34" height="112" rx="17" fill="#000"/>
+      <circle cx="642" cy="479" r="22" fill="#000"/>
+      <circle cx="696" cy="479" r="22" fill="#000"/>
     </mask>
   </defs>
-  <!-- The 100px safe margin follows the optical size of macOS app tiles. -->
   <rect x="108" y="120" width="808" height="808" rx="222" fill="#5C020C" opacity=".13"/>
   <rect x="103" y="110" width="818" height="818" rx="225" fill="#5C020C" opacity=".2"/>
   <rect x="100" y="100" width="824" height="824" rx="228" fill="url(#tile)"/>
   <rect x="100" y="100" width="824" height="824" rx="228" fill="url(#glow)"/>
   <rect x="101.5" y="101.5" width="821" height="821" rx="226.5" fill="none" stroke="url(#rim)" stroke-width="3"/>
-  <g id="pad-glyph" mask="url(#padMask)">
-    <!-- Antenna: a short rounded stem with a small knob, above the body. -->
-    <rect x="472" y="322" width="30" height="70" rx="15" fill="url(#glyph)"/>
-    <circle cx="487" cy="322" r="27" fill="url(#glyph)"/>
-    <!-- Body and grips. -->
-    <rect x="240" y="356" width="544" height="204" rx="102" fill="url(#glyph)"/>
-    <circle cx="304" cy="548" r="86" fill="url(#glyph)"/>
-    <circle cx="720" cy="548" r="86" fill="url(#glyph)"/>
-  </g>
+  <rect x="230" y="320" width="564" height="392" fill="url(#glyph)" mask="url(#pad)"/>
 
   </svg>
 </svg>

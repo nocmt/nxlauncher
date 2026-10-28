@@ -137,6 +137,7 @@ jobs:
           set -euo pipefail
           "$RUNNER_TEMP/test-venv/bin/python3" -m unittest discover -s Tests -v
           common=(Sources/NxLauncher/GameLibrary.swift Sources/NxLauncher/LauncherState.swift
+                  Sources/NxLauncher/AppIconStyle.swift
                   Sources/NxLauncher/Plan.swift Sources/NxLauncher/Pipeline.swift
                   Sources/NxLauncher/LauncherIdentity.swift)
           for harness in GameLibraryTests SwiftSafetyTests; do
@@ -150,14 +151,17 @@ jobs:
             Tests/BuildLogViewTests.swift -o "$RUNNER_TEMP/BuildLogViewTests"
           "$RUNNER_TEMP/BuildLogViewTests"
 
-      - name: Build actual ad-hoc app ZIP with the release script
+      - name: Build ad-hoc signed DMG with the release script
         env:
           VERSION: ${{ steps.source.outputs.version }}
         run: |
           set -euo pipefail
           mkdir "$RUNNER_TEMP/release-assets"
+          # CI has no Developer ID identity and no Apple notary credentials, so this image is
+          # ad-hoc signed and carries no ticket. It is published as a prerelease and never
+          # claims to be the Developer ID-and-notarized release.
           bash Scripts/make-release.sh \
-            "$RUNNER_TEMP/release-assets/NxLauncher-$VERSION-macos-arm64.zip" \
+            "$RUNNER_TEMP/release-assets/NxLauncher-$VERSION-macos-arm64.dmg" \
             --identity - --python "$NXLAUNCHER_PYTHON_ROOT"
 
       - name: Verify final archive, signatures, audits and provenance
@@ -171,7 +175,7 @@ jobs:
           import hashlib, importlib.util, json, os, pathlib, plistlib, posixpath, stat, subprocess, tarfile, zipfile
           root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'release-assets'
           version = os.environ['VERSION']
-          archive = root / f'NxLauncher-{version}-macos-arm64.zip'
+          archive = root / f'NxLauncher-{version}-macos-arm64.dmg'
           manifest_path = pathlib.Path(str(archive) + '.manifest.json')
           checksum = pathlib.Path(str(archive) + '.sha256')
           assert {p.name for p in root.iterdir()} == {archive.name, manifest_path.name, checksum.name}
@@ -179,9 +183,9 @@ jobs:
           digest = hashlib.sha256(archive.read_bytes()).hexdigest()
           assert checksum.read_text().split()[0] == digest
           assert manifest['version'] == version and manifest['architecture'] == 'arm64'
-          assert manifest['archive']['path'] == archive.name
-          assert manifest['archive']['sha256'] == digest
-          assert manifest['archive']['size'] == archive.stat().st_size
+          assert manifest['dmg']['path'] == archive.name
+          assert manifest['dmg']['sha256'] == digest
+          assert manifest['dmg']['size'] == archive.stat().st_size
           assert manifest['signing_identity'] == '-'
           assert manifest['notarized'] is False and manifest['stapled'] is False
           assert manifest['app_audit']['ok'] is True and manifest['app_audit']['findings'] == []
@@ -189,45 +193,48 @@ jobs:
           audit = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(audit)
           findings = []
-          with zipfile.ZipFile(archive) as z:
-              seen = set()
-              for member in z.infolist():
-                  name = member.filename
-                  assert audit.safe_name(name), name
-                  assert name not in seen, name
-                  seen.add(name)
-                  assert name.split('/')[0] in ('NxLauncher.app', '__MACOSX'), name
-                  assert member.file_size <= audit.MAX_MEMBER, name
-                  if stat.S_ISLNK(member.external_attr >> 16):
-                      link = z.read(member).decode()
-                      target = posixpath.normpath(posixpath.join(posixpath.dirname(name), link))
-                      assert not link.startswith('/') and target.startswith('NxLauncher.app/'), name
-                  if not member.is_dir():
-                      audit.inspect_bytes(name, z.read(member), findings)
-          assert not findings, findings
-          extracted = pathlib.Path(os.environ['RUNNER_TEMP']) / 'verified-release'
-          extracted.mkdir()
-          subprocess.run(['ditto', '-x', '-k', str(archive), str(extracted)], check=True)
-          app = extracted / 'NxLauncher.app'
-          subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
-          signature = subprocess.run(['codesign', '-d', '--verbose=4', str(app)],
-                                     check=True, capture_output=True, text=True).stderr
-          assert 'Signature=adhoc' in signature and 'Authority=Developer ID' not in signature
-          plist = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+          mount = pathlib.Path(os.environ['RUNNER_TEMP']) / 'dmg-mount'
+          mount.mkdir()
+          subprocess.run(['hdiutil', 'attach', str(archive), '-readonly', '-nobrowse',
+                          '-noverify', '-mountpoint', str(mount)], check=True,
+                         stdout=subprocess.DEVNULL)
+          try:
+              app = mount / 'NxLauncher.app'
+              assert app.is_dir(), 'DMG has no NxLauncher.app'
+              assert (mount / 'Applications').is_symlink(), 'DMG has no Applications link'
+              subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
+              signature = subprocess.run(['codesign', '-d', '--verbose=4', str(app)],
+                                         check=True, capture_output=True, text=True).stderr
+              assert 'Signature=adhoc' in signature and 'Authority=Developer ID' not in signature
+              for path in sorted(app.rglob('*')):
+                  if path.is_symlink():
+                      assert path.exists() and str(path.resolve()).startswith(str(app.resolve())), path
+                      continue
+                  if not path.is_file():
+                      continue
+                  rel = path.relative_to(mount).as_posix()
+                  assert path.stat().st_size <= audit.MAX_MEMBER, rel
+                  audit.inspect_bytes(rel, path.read_bytes(), findings)
+              assert not findings, findings
+              problems, _ = audit.audit(app, 'app')
+              assert not problems, problems
+              payload_root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'verified-payload'
+              payload_root.mkdir()
+              with tarfile.open(app / 'Contents/Resources/nxlauncher-home.tgz', 'r:gz') as payload:
+                  payload.extractall(payload_root, filter='data')
+              problems, entries = audit.audit(payload_root, 'payload')
+              assert not problems, problems
+              payload_audit_sha256 = hashlib.sha256(
+                  json.dumps(entries, sort_keys=True).encode()).hexdigest()
+              plist_data = (app / 'Contents/Info.plist').read_bytes()
+              arch_output = subprocess.check_output(
+                  ['lipo', '-archs', str(app / 'Contents/MacOS/NxLauncher')], text=True)
+          finally:
+              subprocess.run(['hdiutil', 'detach', str(mount), '-quiet'], check=False)
+          plist = plistlib.loads(plist_data)
           assert plist['CFBundleShortVersionString'] == version and plist['CFBundleVersion'] == version
-          arch = subprocess.check_output(['lipo', '-archs', str(app / 'Contents/MacOS/NxLauncher')], text=True)
-          assert arch.strip() == 'arm64', arch
-          problems, _ = audit.audit(app, 'app')
-          assert not problems, problems
-          payload_root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'verified-payload'
-          payload_root.mkdir()
-          with tarfile.open(app / 'Contents/Resources/nxlauncher-home.tgz', 'r:gz') as payload:
-              payload.extractall(payload_root, filter='data')
-          problems, entries = audit.audit(payload_root, 'payload')
-          assert not problems, problems
-          payload_audit_sha256 = hashlib.sha256(
-              json.dumps(entries, sort_keys=True).encode()).hexdigest()
-          # Keep checksums portable, without changing any signed ZIP bytes.
+          assert arch_output.strip() == 'arm64', arch_output
+          # Keep the checksum portable without changing any signed image bytes.
           checksum.write_text(f'{digest}  {archive.name}\n')
           provenance = {
               'tag': os.environ['RELEASE_TAG'], 'source_sha': os.environ['SOURCE_SHA'],
@@ -297,7 +304,7 @@ jobs:
           proof = json.loads((root / 'release-provenance.json').read_text())
           assert proof['source_sha'] == os.environ['SOURCE_SHA'] and proof['tag'] == os.environ['RELEASE_TAG']
           assert proof['signing'] == 'ad-hoc' and proof['notarized'] is False
-          base = f"NxLauncher-{os.environ['VERSION']}-macos-arm64.zip"
+          base = f"NxLauncher-{os.environ['VERSION']}-macos-arm64.dmg"
           expected = {base, base + '.sha256', base + '.manifest.json'}
           assert {f['path'] for f in proof['files']} == expected
           assert {p.name for p in root.iterdir()} == expected | {'release-provenance.json'}

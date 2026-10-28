@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,7 +63,16 @@ def sign_tree(root, identity, timestamp='none'):
                    '--timestamp' if timestamp == 'secure' and identity != '-' else '--timestamp=none']
         if path.name == 'dmsh_xlate':
             command += ['--entitlements', str(ROOT / 'Scripts/translator.entitlements.plist')]
-        run(*command, path, stderr=subprocess.STDOUT)
+        # A secure timestamp comes from Apple's timestamp server, which occasionally drops a
+        # request mid-build. Retry those transient failures instead of losing the whole run.
+        for attempt in range(4):
+            try:
+                run(*command, path, stderr=subprocess.STDOUT)
+                break
+            except subprocess.CalledProcessError:
+                if timestamp != 'secure' or attempt == 3:
+                    raise
+                time.sleep(2 * (attempt + 1))
         run('codesign', '--verify', '--strict', path, stderr=subprocess.STDOUT)
         # Also reject developer/homebrew linked dependencies in native binaries.
         dependencies = run('otool', '-L', path, text=True)

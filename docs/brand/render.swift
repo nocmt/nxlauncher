@@ -56,6 +56,15 @@ for size in [16, 32, 128, 256, 512] {
     }
 }
 try run("/usr/bin/iconutil", ["-c", "icns", iconset.path, "-o", resources.appendingPathComponent("AppIcon.icns").path])
+// The three Dock-icon choices. They are rendered from the same editable SVGs as the app icon,
+// so a colour change never leaves the settings previews behind.
+let variants = resources.appendingPathComponent("IconVariants", isDirectory: true)
+try fm.createDirectory(at: variants, withIntermediateDirectories: true)
+for (stem, size) in [("solid", 256), ("outline", 256), ("retro", 256)] {
+    let svg = ["solid": "app-icon.svg", "outline": "app-icon-outline.svg", "retro": "app-icon-retro.svg"][stem]!
+    try render(brand.appendingPathComponent(svg), variants.appendingPathComponent("\(stem).png"),
+               width: size, height: size)
+}
 try render(brand.appendingPathComponent("hero.svg"), brand.appendingPathComponent("hero-preview.png"), width: 1600, height: 640)
 // This montage is deliberately generated from real icon rasters, not scaled screenshots.
 let sheetBitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 960, pixelsHigh: 640,
@@ -80,4 +89,4 @@ for (x, size) in [(40,16), (136,32), (248,64), (392,128), (612,256)] {
 NSGraphicsContext.restoreGraphicsState()
 guard let png = sheetBitmap.representation(using: .png, properties: [:]) else { throw BuildError.failed("contact sheet") }
 try png.write(to: brand.appendingPathComponent("icon-sizes.png"), options: .atomic)
-print("Built Resources/AppIcon.png (1024px), AppIcon.icns (10 representations), hero-preview.png, icon-sizes.png")
+print("Built Resources/AppIcon.png (1024px), AppIcon.icns (10 representations), Resources/IconVariants/*.png, hero-preview.png, icon-sizes.png")

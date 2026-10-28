@@ -50,6 +50,11 @@ cp "$BIN" "$APP/Contents/MacOS/NxLauncher"
 strip -S "$APP/Contents/MacOS/NxLauncher"
 cp "$ICON" "$APP/Contents/Resources/AppIcon.icns"
 cp "$HERE/Resources/AppIcon.png" "$APP/Contents/Resources/AppIcon.png"
+# The Dock-icon choices offered in the settings; missing ones would leave empty previews.
+mkdir -p "$APP/Contents/Resources/IconVariants"
+for variant in solid outline retro; do
+    cp "$HERE/Resources/IconVariants/$variant.png" "$APP/Contents/Resources/IconVariants/$variant.png"
+done
 cp "$HERE/LICENSE" "$APP/Contents/Resources/LICENSE"
 cp "$HERE/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/THIRD_PARTY_NOTICES.md"
 cp -R "$HERE/Scripts/licenses/." "$APP/Contents/Resources/licenses/"

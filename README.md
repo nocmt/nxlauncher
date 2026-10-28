@@ -9,7 +9,7 @@
 A macOS launcher for the [nxnative](https://github.com/seedds/nxnative) pipeline.
 Organize your own game dumps, inspect the toolchain, build, and export a Mac app or iOS IPA.
 
-[![Version](https://img.shields.io/badge/version-0.1.5-C72835)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.1.6-C72835)](CHANGELOG.md)
 [![Platform](https://img.shields.io/badge/host-Apple%20Silicon-111827)](#requirements)
 [![Runtime](https://img.shields.io/badge/game%20runtime-macOS%2026%2B-087F8C)](#requirements)
 [![Pipeline](https://img.shields.io/badge/powered%20by-nxnative-555)](https://github.com/seedds/nxnative)
@@ -20,7 +20,7 @@ Organize your own game dumps, inspect the toolchain, build, and export a Mac app
 
 </div>
 
-> **0.1.5 is published** as a [GitHub prerelease](https://github.com/nocmt/nxlauncher/releases/tag/v0.1.5): **Developer ID signed, hardened runtime, not notarized and not stapled**, so Gatekeeper may still block it on another Mac. The release contains only the launcher ZIP, its checksum and its manifest: no games, keys or saves. See [release notes](docs/releasing.md) for what was verified and what was not.
+> **0.1.6 is published** as a [GitHub release](https://github.com/nocmt/nxlauncher/releases/tag/v0.1.6) as a signed and **notarized** disk image: Developer ID signed, hardened runtime, secure timestamp, notarization ticket stapled to the DMG, so Gatekeeper accepts it on other Macs. The release contains only the DMG, its checksum and its manifest: no games, keys or saves. See [release notes](docs/releasing.md) for what was verified and what was not.
 
 ## A library that builds
 
@@ -38,7 +38,7 @@ NxLauncher automates a build workflow. Compatibility depends on the exact game/u
 
 ## Quick start
 
-1. Get `NxLauncher.app` from [Releases](https://github.com/nocmt/nxlauncher/releases/latest) once `v0.1.5` is published. Extract the archive before opening it.
+1. Get `NxLauncher-0.1.6-macos-arm64.dmg` from the [v0.1.6 release](https://github.com/nocmt/nxlauncher/releases/tag/v0.1.6), open the image and drag `NxLauncher.app` to Applications.
 2. Open **通用设置 / 编译环境** and check the **Mac** target. Follow missing-tool guidance; review the package list before confirming an installation.
 3. Add one game folder with your legally obtained base NSP/XCI and matching update/DLC. Select your own `prod.keys` in General Settings; the file stays at its original location.
 4. Check the detected title, update and profile, then build for **Mac**. First-time shader work can be lengthy; keep the logs.
@@ -62,7 +62,7 @@ Official setup: [Xcode](https://developer.apple.com/xcode/) · [Homebrew](https:
 
 ## Games with local packaging evidence
 
-These are **historical results**. **None has been revalidated through gameplay on the final 0.1.5 baseline.**
+These are **historical results**. **None has been revalidated through gameplay on the final 0.1.6 baseline.**
 
 | Game / version | Historical packaging | Supported runtime statement |
 |---|---|---|
@@ -146,7 +146,7 @@ python3 -m unittest discover -s Tests -v
 
 The app is written to `dist/NxLauncher.app`. Default exported-game fonts use open **NotoSansSC**; the helper has been checked locally, which does not guarantee every game's font coverage. See [third-party notices](THIRD_PARTY_NOTICES.md) for the reviewed distribution inventory.
 
-The coordinator confirmed upstream HEAD/base **`201dfd1280684e9d3ceac8b644236fdac11b6cc2`**, with **five functional patches** and prepared target tree **`a3814a41de5781b208525f25b6facabcf8cd423f`**. [`patches/base-commit`](patches/base-commit), [`patches/series`](patches/series) and [patch notes](patches/README.md) record the preparation contract. Host/graphics components and upstream Python checks have been exercised; no actual game was run for final 0.1.5 validation. Historical tests do not validate the current packaged game's behavior.
+The coordinator confirmed upstream HEAD/base **`201dfd1280684e9d3ceac8b644236fdac11b6cc2`**, with **five functional patches** and prepared target tree **`a3814a41de5781b208525f25b6facabcf8cd423f`**. [`patches/base-commit`](patches/base-commit), [`patches/series`](patches/series) and [patch notes](patches/README.md) record the preparation contract. Host/graphics components and upstream Python checks have been exercised; no actual game was run for final 0.1.6 validation. Historical tests do not validate the current packaged game's behavior.
 
 ## Get unstuck
 
@@ -159,7 +159,7 @@ For a report include launcher version, target, OS/chip, title ID/update, graphic
 - Primarily Chinese UI, with English and Chinese documentation.
 - No promise of all-game compatibility, whole-game completion, stable FPS or iOS-device success.
 - No game/key sourcing or permission to redistribute exported game content.
-- Developer ID is an optional signing path; this release plans a **Developer ID–signed, unnotarized preview**. Local/ad-hoc signature verification is a separate check.
+- Developer ID signing is optional for local builds; official releases are **Developer ID signed and notarized**, and ship as a DMG because that is the container that can carry a stapled ticket.
 - NxLauncher source uses [LICENSE](LICENSE). Upstream, fonts and dependencies retain their own terms; distribution decisions require the reviewed [third-party notices](THIRD_PARTY_NOTICES.md).
 
 [Changelog](CHANGELOG.md) · [Release process](docs/releasing.md) · [Privacy and diagnostics](docs/privacy.md) · [Upstream nxnative](https://github.com/seedds/nxnative)
