@@ -2,7 +2,7 @@
 
 [中文首页](../README.zh-CN.md) · [English README](../README.md) · [打包最佳实践](打包最佳实践.md) · [实测记录](tested-games.md)
 
-适用于 NxLauncher **0.1.3** 的 Mac／iOS 目标。启动器界面主要中文，因此下面按界面与错误关键词查找。命令从准备好的源码仓库根目录运行；打包版用户优先使用编译环境、构建日志和诊断导出功能。示例中的路径、title ID、版本和会话 ID 需替换成实际值。
+适用于 NxLauncher **0.1.4** 的 Mac／iOS 目标。启动器界面主要中文，因此下面按界面与错误关键词查找。命令从准备好的源码仓库根目录运行；打包版用户优先使用编译环境、构建日志和诊断导出功能。示例中的路径、title ID、版本和会话 ID 需替换成实际值。
 
 For English readers: the table below maps symptoms to recovery sections. Start with target-specific `doctor`, preserve the failed session, and review the diagnostic ZIP before sharing. Packaging success, runtime success and device installation are separate checks.
 
@@ -174,7 +174,7 @@ codesign -dv --verbose=4 "$HOME/Desktop/MyGame.app"
 
 ## macOS 拦截与签名
 
-协调者确认已有 Developer ID、无公证凭据，本次计划交付 **0.1.3 Developer ID 签名、未公证 preview**；实际下载资产的签名验收以最终发布清单为准。**本地 ad-hoc 校验、Developer ID 签名、Gatekeeper 评估、Apple 公证是不同事情。**
+协调者确认已有 Developer ID、无公证凭据，本次计划交付 **0.1.4 Developer ID 签名、未公证 preview**；实际下载资产的签名验收以最终发布清单为准。**本地 ad-hoc 校验、Developer ID 签名、Gatekeeper 评估、Apple 公证是不同事情。**
 
 1. 从项目 Release 获取启动器，完整解压，核对发布说明及其提供的校验信息。
 2. 对被拦截的实际 App 运行只读检查：
@@ -231,7 +231,7 @@ codesign -dv --verbose=4 "$HOME/Desktop/MyGame.app"
 - 重签工具可能更改或移除权限；安装成功但运行失败时，查看设备安装／崩溃日志与最终权限。免费账号、付费账号及工具的具体限制以 Apple 与对应工具当前规则为准。
 - `increased-memory-limit`、`extended-virtual-addressing` 等权限是否可用，取决于所选签名／描述文件和系统支持；不能在文档中保证任意侧载方式都保留。
 
-反馈时可附去标识后的错误、bundle ID 与相关权限名，不附私钥、证书密码、完整描述文件或个人设备标识。历史 IPA 打包记录不是 0.1.3 iOS 真机成功证明。
+反馈时可附去标识后的错误、bundle ID 与相关权限名，不附私钥、证书密码、完整描述文件或个人设备标识。历史 IPA 打包记录不是 0.1.4 iOS 真机成功证明。
 
 ## 诊断包内容、检查与反馈
 
@@ -259,7 +259,7 @@ python3 Tools/pack_pipeline.py diagnostics \
 4. 反馈包含下列模板；仓库公开后使用 [Issues](https://github.com/nocmt/nxlauncher/issues)，公开前使用既有私有协作渠道。
 
 ```text
-NxLauncher: 0.1.3（注明实际构建来源）
+NxLauncher: 0.1.4（注明实际构建来源）
 目标: mac / ios
 系统和芯片:
 游戏 title ID / 显示版本 / v数字版本:

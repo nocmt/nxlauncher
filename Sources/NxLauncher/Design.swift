@@ -185,38 +185,52 @@ struct SegmentedChoice<Value: Hashable>: View {
 
     var options: [Option]
     @Binding var selection: Value
-    var minWidth: CGFloat = 0
+    /// The width of one cell. Equal cells inside a group keep the control tidy; nil sizes to text.
+    var optionWidth: CGFloat? = nil
 
     var body: some View {
-        HStack(spacing: 3) {
+        HStack(spacing: 2) {
             ForEach(options) { option in
-                let selected = option.value == selection
-                Button {
-                    guard !selected else { return }
-                    selection = option.value
-                } label: {
-                    Text(option.label)
-                        .font(.system(size: 13, weight: selected ? .semibold : .regular))
-                        .foregroundStyle(selected ? Color.primary : Color.secondary)
-                        .lineLimit(1)
-                        .padding(.horizontal, 14)
-                        .frame(maxWidth: .infinity, minHeight: 30)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(selected ? DS.card : Color.clear)
-                        .shadow(color: selected ? DS.cardShadow : Color.clear, radius: 2, x: 0, y: 1)
-                )
-                .accessibilityAddTraits(selected ? [.isSelected] : [])
-                .accessibilityLabel(option.label)
+                cell(option)
             }
         }
         .padding(3)
-        .frame(minWidth: minWidth)
-        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(DS.quiet))
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(DS.quiet))
         .animation(.easeOut(duration: 0.15), value: selection)
+    }
+
+    private func cell(_ option: Option) -> some View {
+        let selected = option.value == selection
+        return Button {
+            if !selected { selection = option.value }
+        } label: {
+            Text(option.label)
+                .font(cellFont(selected: selected))
+                .foregroundStyle(cellColor(selected: selected))
+                .lineLimit(1)
+                .padding(.horizontal, 12)
+                .frame(minHeight: 26)
+                .frame(width: optionWidth)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(cellBackground(selected: selected))
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+        .accessibilityLabel(option.label)
+    }
+
+    private func cellFont(selected: Bool) -> Font {
+        .system(size: 12.5, weight: selected ? .semibold : .regular)
+    }
+
+    private func cellColor(selected: Bool) -> Color {
+        selected ? Color.primary : Color.secondary
+    }
+
+    private func cellBackground(selected: Bool) -> some View {
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .fill(selected ? DS.card : Color.clear)
+            .shadow(color: selected ? DS.cardShadow : Color.clear, radius: 2, x: 0, y: 1)
     }
 }
 

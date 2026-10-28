@@ -6,6 +6,24 @@ Only recorded changes and their validation boundaries are described here. A rele
 
 这里只记录改动与验证边界；出现版本标题不表示资产已经发布。
 
+## 0.1.4 — 2026-10-28
+
+**Fixes for the 0.1.3 controls: dependency details stay open, and the segmented choices fit the row. / 修复 0.1.3 控件问题：依赖详情可正常展开，分段控件不再撑满整行。**
+
+Release: [v0.1.4](https://github.com/nocmt/nxlauncher/releases/tag/v0.1.4). Same packaging and signing path: Developer ID signed, hardened runtime, not notarized and not stapled.
+
+Release：[v0.1.4](https://github.com/nocmt/nxlauncher/releases/tag/v0.1.4)。打包与签名方式不变：Developer ID 签名、hardened runtime、未公证、未 staple。
+
+- The dependency details section always collapsed itself as soon as a check finished, because a successful check explicitly set the expanded flag to false. It now only auto-expands when something is missing, so clicking it expands and stays expanded. Clicking the whole header row toggles it, matching the build log.
+- The three per-game segmented choices no longer stretch across the card. Each option has a fixed cell (language 84 pt, frame rate 92 pt, operation mode 116 pt, 26 pt tall plus padding), so the groups sit at a natural width and stay easy to hit.
+- No change to build, export, dependency or diagnostics behavior.
+
+对应中文：
+
+- 依赖详情以前只要检查完成就会自动收起（检查成功时代码直接把展开状态设为 false），所以看起来“点了只会检查”。现在只在缺少依赖时自动展开，点击整条标题即可展开并保持；点击区域与构建日志一致。
+- 三个分段单选不再拉满整张卡片：每个选项固定宽度（语言 84、帧率 92、运行模式 116，外加高度 26 与内边距），整组保持自然宽度，同时仍然好点。
+- 构建、导出、依赖与诊断行为未改动。
+
 ## 0.1.3 — 2026-10-28
 
 **Usability release: larger settings controls, a full-width log toggle, a quieter settings sheet and a simpler icon. / 易用性版本：设置控件更大、日志可整条点击、设置页更安静、图标更简洁。**

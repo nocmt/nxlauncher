@@ -588,7 +588,9 @@ final class LauncherState: ObservableObject {
                 guard self?.buildTarget == target else { self?.checkingDependencies = false; self?.checkDependencies(); return }
                 self?.dependencies = failure.isEmpty ? report : nil
                 self?.dependencyError = failure
-                self?.showDependencies = report?.ready == false
+                // Auto-open only when something is wrong. A finished check must never collapse a
+                // section the user just opened.
+                if report?.ready == false { self?.showDependencies = true }
                 self?.checkingDependencies = false
             }
         }

@@ -272,18 +272,20 @@ struct ContentView: View {
     private var settings: some View {
         Card(title: "游戏设置", systemImage: "slider.horizontal.3") {
             ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: 20) {
+                HStack(alignment: .top, spacing: 24) {
                     languageChoice
                     fpsChoice
                     modeChoice
+                    Spacer(minLength: 0)
                 }
                 VStack(alignment: .leading, spacing: 14) {
-                    HStack(alignment: .top, spacing: 20) { languageChoice; fpsChoice }
+                    HStack(alignment: .top, spacing: 24) { languageChoice; fpsChoice }
                     modeChoice
                 }
                 VStack(alignment: .leading, spacing: 14) { languageChoice; fpsChoice; modeChoice }
             }
-            .padding(12)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
             .disabled(state.busy)
             .background(DS.row, in: RoundedRectangle(cornerRadius: DS.small, style: .continuous))
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -291,31 +293,31 @@ struct ContentView: View {
     }
 
     private var languageChoice: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 7) {
             Text("游戏语言").font(.system(size: 12, weight: .medium))
             SegmentedChoice(options: LauncherState.Language.allCases.map {
                 SegmentedChoice<LauncherState.Language>.Option(value: $0, label: $0.rawValue)
-            }, selection: $state.language, minWidth: 282)
+            }, selection: $state.language, optionWidth: 84)
         }
         .onChange(of: state.language) { _, _ in state.runtimeSettingsChanged() }
     }
 
     private var fpsChoice: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 7) {
             Text("目标帧率").font(.system(size: 12, weight: .medium))
             SegmentedChoice(options: [.init(value: 60, label: "60 帧"), .init(value: 30, label: "30 帧")],
-                            selection: $state.targetFPS, minWidth: 170)
+                            selection: $state.targetFPS, optionWidth: 92)
         }
         .onChange(of: state.targetFPS) { _, _ in state.runtimeSettingsChanged() }
     }
 
     private var modeChoice: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 7) {
             Text("运行模式").font(.system(size: 12, weight: .medium))
             SegmentedChoice(options: [
                 .init(value: LauncherState.OpMode.handheld, label: "掌机 720p"),
                 .init(value: LauncherState.OpMode.console, label: "主机 1080p"),
-            ], selection: $state.opMode, minWidth: 262)
+            ], selection: $state.opMode, optionWidth: 116)
         }
         .help(modeHint)
         .onChange(of: state.opMode) { _, _ in state.runtimeSettingsChanged() }
@@ -413,7 +415,29 @@ struct ContentView: View {
                         }
                         .buttonStyle(QuietButtonStyle())
                     }
-                    DisclosureGroup("依赖详情（\(report.checks.filter { $0.ok }.count)/\(report.checks.count) 已就绪）", isExpanded: $state.showDependencies) {
+                    // The whole header toggles: the same large target as the build log.
+                    Button {
+                        withAnimation(.easeOut(duration: 0.18)) { state.showDependencies.toggle() }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .rotationEffect(.degrees(state.showDependencies ? 90 : 0))
+                            Text("依赖详情（\(report.checks.filter { $0.ok }.count)/\(report.checks.count) 已就绪）")
+                                .font(.system(size: 11.5, weight: .medium))
+                            Spacer(minLength: 0)
+                            Text(state.showDependencies ? "收起" : "展开")
+                                .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .background(RoundedRectangle(cornerRadius: DS.small, style: .continuous).fill(DS.quiet))
+                    .accessibilityLabel(state.showDependencies ? "收起依赖详情" : "展开依赖详情")
+                    if state.showDependencies {
                         ScrollView {
                             VStack(alignment: .leading, spacing: 8) {
                                 ForEach(report.checks) { check in
