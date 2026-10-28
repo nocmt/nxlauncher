@@ -22,7 +22,32 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  precheck:
+    # A manually produced Developer ID asset may already own this tag. Never race it
+    # with an automated ad-hoc build, and never overwrite an existing release.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      exists: ${{ steps.release.outputs.exists }}
+    steps:
+      - name: Detect an existing release for this tag
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --json tagName >/dev/null 2>&1; then
+            echo 'exists=true' >> "$GITHUB_OUTPUT"
+            echo "::notice::$RELEASE_TAG already has a release; the automated ad-hoc build is skipped."
+          else
+            echo 'exists=false' >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: precheck
+    if: needs.precheck.outputs.exists != 'true'
     # Standard public-repository Apple Silicon runner; macos-15-intel is a different image.
     runs-on: macos-15
     timeout-minutes: 60
@@ -237,7 +262,8 @@ jobs:
           retention-days: 14
 
   publish:
-    needs: build
+    needs: [precheck, build]
+    if: needs.precheck.outputs.exists != 'true' && needs.build.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
