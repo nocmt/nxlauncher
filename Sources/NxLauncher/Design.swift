@@ -170,6 +170,56 @@ struct QuietButtonStyle: ButtonStyle {
     }
 }
 
+// MARK: - the segmented choice
+
+/// A large segmented choice: every option is a real button whose whole cell is the hit area.
+///
+/// The native segmented control is too small for the three per-game settings (language, frame
+/// rate, mode), so this keeps the same single-choice behaviour with a taller, easier target.
+struct SegmentedChoice<Value: Hashable>: View {
+    struct Option: Identifiable {
+        var value: Value
+        var label: String
+        var id: String { label }
+    }
+
+    var options: [Option]
+    @Binding var selection: Value
+    var minWidth: CGFloat = 0
+
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(options) { option in
+                let selected = option.value == selection
+                Button {
+                    guard !selected else { return }
+                    selection = option.value
+                } label: {
+                    Text(option.label)
+                        .font(.system(size: 13, weight: selected ? .semibold : .regular))
+                        .foregroundStyle(selected ? Color.primary : Color.secondary)
+                        .lineLimit(1)
+                        .padding(.horizontal, 14)
+                        .frame(maxWidth: .infinity, minHeight: 30)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(selected ? DS.card : Color.clear)
+                        .shadow(color: selected ? DS.cardShadow : Color.clear, radius: 2, x: 0, y: 1)
+                )
+                .accessibilityAddTraits(selected ? [.isSelected] : [])
+                .accessibilityLabel(option.label)
+            }
+        }
+        .padding(3)
+        .frame(minWidth: minWidth)
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(DS.quiet))
+        .animation(.easeOut(duration: 0.15), value: selection)
+    }
+}
+
 // MARK: - the progress bar
 
 /// A rounded progress bar: empty when idle, a moving stripe when the count is unknown, filled when

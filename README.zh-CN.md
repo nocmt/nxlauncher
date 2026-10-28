@@ -9,7 +9,7 @@
 为 [nxnative](https://github.com/seedds/nxnative) 构建流水线打造的 macOS 启动器。
 整理自备游戏、检查环境、追踪构建，并导出 Mac App 或 iOS IPA。
 
-[![版本](https://img.shields.io/badge/version-0.1.2-C72835)](CHANGELOG.md)
+[![版本](https://img.shields.io/badge/version-0.1.3-C72835)](CHANGELOG.md)
 [![平台](https://img.shields.io/badge/host-Apple%20Silicon-111827)](#环境要求)
 [![运行系统](https://img.shields.io/badge/game%20runtime-macOS%2026%2B-087F8C)](#环境要求)
 [![流水线](https://img.shields.io/badge/powered%20by-nxnative-555)](https://github.com/seedds/nxnative)
@@ -20,7 +20,7 @@
 
 </div>
 
-> **0.1.2 已发布**为 [GitHub 预发布版](https://github.com/nocmt/nxlauncher/releases/tag/v0.1.2)：**Developer ID 签名、启用 hardened runtime、未公证、未 staple**，在其他 Mac 上仍可能被 Gatekeeper 拦截。Release 只含启动器 ZIP、校验和与清单，不含游戏、密钥或存档。验证范围与未验证项见[发布流程](docs/releasing.md)。
+> **0.1.3 已发布**为 [GitHub 预发布版](https://github.com/nocmt/nxlauncher/releases/tag/v0.1.3)：**Developer ID 签名、启用 hardened runtime、未公证、未 staple**，在其他 Mac 上仍可能被 Gatekeeper 拦截。Release 只含启动器 ZIP、校验和与清单，不含游戏、密钥或存档。验证范围与未验证项见[发布流程](docs/releasing.md)。
 
 ## 从游戏库到构建产物
 
@@ -38,7 +38,7 @@ NxLauncher 自动化的是构建流程。兼容性仍由游戏、更新版本、
 
 ## 最快开始
 
-1. `v0.1.2` 发布后，从 [Releases](https://github.com/nocmt/nxlauncher/releases/latest) 下载启动器，先解压，再打开 `NxLauncher.app`。
+1. `v0.1.3` 发布后，从 [Releases](https://github.com/nocmt/nxlauncher/releases/latest) 下载启动器，先解压，再打开 `NxLauncher.app`。
 2. 在**通用设置／编译环境**中检查 **Mac** 目标，按提示补齐工具。安装前先核对将要执行的包列表。
 3. 添加一个游戏文件夹，放入自己合法获取的本体 NSP/XCI 和匹配更新、DLC；在通用设置选择自己的 `prod.keys`，文件保留在原位置。
 4. 核对识别出的游戏、更新与档案，然后构建 **Mac**。首次着色器处理可能较久，保留日志。
@@ -62,7 +62,7 @@ NxLauncher 自动化的是构建流程。兼容性仍由游戏、更新版本、
 
 ## 有本地成功打包记录的游戏
 
-以下均为**历史结果**，**尚未在最终 0.1.2 基线上重新游玩验证**。
+以下均为**历史结果**，**尚未在最终 0.1.3 基线上重新游玩验证**。
 
 | 游戏／版本 | 历史打包证据 | 可以支持的运行结论 |
 |---|---|---|
@@ -146,7 +146,7 @@ python3 -m unittest discover -s Tests -v
 
 产物为 `dist/NxLauncher.app`。游戏导出默认采用开放字体 **NotoSansSC**，字体 helper 已做本地验证；不承诺覆盖每款游戏的全部字形与布局。分发清单以核对后的[第三方声明](THIRD_PARTY_NOTICES.md)为准。
 
-协调者已确认上游 HEAD／base 为 **`201dfd1280684e9d3ceac8b644236fdac11b6cc2`**，保留 **5 个功能补丁**，准备后的目标 tree 为 **`a3814a41de5781b208525f25b6facabcf8cd423f`**。准备契约记录在 [`patches/base-commit`](patches/base-commit)、[`patches/series`](patches/series) 和[补丁说明](patches/README.md)。host／graphics 组件及上游 Python 已有检查验证；最终 0.1.2 验证未运行真实游戏，历史测试不能代替当前游戏产物的运行验收。
+协调者已确认上游 HEAD／base 为 **`201dfd1280684e9d3ceac8b644236fdac11b6cc2`**，保留 **5 个功能补丁**，准备后的目标 tree 为 **`a3814a41de5781b208525f25b6facabcf8cd423f`**。准备契约记录在 [`patches/base-commit`](patches/base-commit)、[`patches/series`](patches/series) 和[补丁说明](patches/README.md)。host／graphics 组件及上游 Python 已有检查验证；最终 0.1.3 验证未运行真实游戏，历史测试不能代替当前游戏产物的运行验收。
 
 ## 遇到问题
 

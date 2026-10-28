@@ -1,6 +1,6 @@
-# NxLauncher 发布流程（0.1.2）
+# NxLauncher 发布流程（0.1.3）
 
-发布有两条路径：本机用自己的 Developer ID 构建并手动上传；标签 CI 自动构建 **ad-hoc 签名、未公证、未 staple** 的 GitHub prerelease。两者不能混称。0.1.2 已用本机 Developer ID 签名、手动创建 prerelease 并上传三个资产；公开前的历史重写见文末“History rewrite (2026-10-28)”。CI 面向后续标签自动发布；已经存在的同名 Release 会被跳过，不会被覆盖。
+发布有两条路径：本机用自己的 Developer ID 构建并手动上传；标签 CI 自动构建 **ad-hoc 签名、未公证、未 staple** 的 GitHub prerelease。两者不能混称。0.1.2 与 0.1.3 均用本机 Developer ID 签名、手动创建 prerelease 并上传三个资产；公开前的历史重写见文末“History rewrite (2026-10-28)”。CI 面向后续标签自动发布；已经存在的同名 Release 会被跳过，不会被覆盖。
 
 ## 输入与边界
 
@@ -41,9 +41,9 @@ ZIP 同文件系统原子替换；已有 app 则由 `make-app.sh` 使用 macOS `
 产物命名严格为：
 
 ```text
-NxLauncher-0.1.2-macos-arm64.zip
-NxLauncher-0.1.2-macos-arm64.zip.sha256
-NxLauncher-0.1.2-macos-arm64.zip.manifest.json
+NxLauncher-0.1.3-macos-arm64.zip
+NxLauncher-0.1.3-macos-arm64.zip.sha256
+NxLauncher-0.1.3-macos-arm64.zip.manifest.json
 ```
 
 不要误用没有 `.zip` 中缀的 manifest 文件名。脚本旧版本生成的 `.sha256` 可能含已清理的 staging 绝对路径；上传前核对原摘要、ZIP 和 manifest 一致后，用 ZIP 文件名重新生成便携 sidecar，再在产物目录运行 `shasum -a 256 --check`。CI 会自动验证并规范该 sidecar，不改签名 ZIP 字节。
@@ -57,7 +57,7 @@ NxLauncher-0.1.2-macos-arm64.zip.manifest.json
 
 ## 签名等级与审计范围
 
-- **本机 Developer ID 预览**：使用发布者 Keychain 中实际可用的 Developer ID Application 证书和 hardened runtime；当前 0.1.2 未公证、未 staple。上传说明和 manifest 必须如实记录实际身份和状态。
+- **本机 Developer ID 预览**：使用发布者 Keychain 中实际可用的 Developer ID Application 证书和 hardened runtime；当前 0.1.3 未公证、未 staple。上传说明和 manifest 必须如实记录实际身份和状态。
 - **CI ad-hoc 预览**：`DEVELOPER_ID=-`、`CODESIGN_TIMESTAMP=none`，无需 Apple secrets。Release 标题、说明和 `release-provenance.json` 均注明 ad-hoc、未公证。不声称是 Developer ID 发布，也不执行 `notarytool`。
 - `codesign --verify --deep --strict` 验证签名结构和内容完整性，不证明 Apple 公证或游戏兼容性。Gatekeeper 可能阻止未公证预览；`spctl --assess --type execute --verbose=4` 仅反映本机评估。
 - `Tools/release-audit.py` 扫描公开 payload/app 的白名单、归档逃逸、游戏/密钥/存档格式、凭据、个人绝对路径和 `.pdb` 等；结果记录每个文件的 SHA-256。CI 额外扫描最终 ZIP 及嵌套归档，检查顶层目录、重复/不安全 ZIP 路径、符号链接、文件大小，再解包验证签名、app 版本和 arm64 架构。
@@ -85,11 +85,11 @@ sha=$(git rev-parse "refs/tags/$tag^{commit}")
 gh workflow run release.yml -f tag="$tag" -f source_sha="$sha"
 ```
 
-手动触发走相同的源码构建、审计和 prerelease 流程，不从本机上传预生成资产。workflow 必须已经存在于默认分支，标签提交也应包含本发布实现。首次公开与本次 0.1.2 的 Developer ID 资产按下面的手动流程处理。
+手动触发走相同的源码构建、审计和 prerelease 流程，不从本机上传预生成资产。workflow 必须已经存在于默认分支，标签提交也应包含本发布实现。首次公开与本次 0.1.3 的 Developer ID 资产按下面的手动流程处理。
 
 同一标签的运行串行排队，不取消已进行的构建。**如果同名 Release 已存在，创建会失败，不覆盖手动 Developer ID 资产，不执行 `--clobber`。** 如果一次发布因网络中断留下 draft 或部分资产，先检查 Release 的状态、签名类型和摘要，再由发布者处理该 draft；直接重跑不会静默覆盖它。
 
-## 本次 0.1.2 手动 Developer ID 上传
+## 本次 0.1.3 手动 Developer ID 上传
 
 本机产物已签名但未公证；发布说明必须写明 “Developer ID signed; not notarized; not stapled”，并核对实际证书身份。发布前从最终 ZIP 解包，运行 app audit 和 `codesign --verify --deep --strict`，核验 manifest 的版本/摘要/签名身份，确认对应源码已提交，标签指向该提交。只上传下面列出的三个公开产物。
 
@@ -129,5 +129,5 @@ gh release create "$tag" \
 
 ## Published state (2026-10-28)
 
-`main` 与 `maintenance/nxnative-upstream-patches` 指向发布提交；标签 `v0.1.2` 指向同一提交；Release 是 prerelease，包含 ZIP、`.sha256`、`.manifest.json` 三个资产。推送标签触发的工作流先运行 `precheck`，检测到同名 Release 已存在后跳过自动 ad-hoc 构建，因此手动签名的 Developer ID 资产没有被替换或重复上传。
+`main` 与 `maintenance/nxnative-upstream-patches` 指向发布提交；标签 `v0.1.3` 指向同一提交；Release 是 prerelease，包含 ZIP、`.sha256`、`.manifest.json` 三个资产。推送标签触发的工作流先运行 `precheck`，检测到同名 Release 已存在后跳过自动 ad-hoc 构建，因此手动签名的 Developer ID 资产没有被替换或重复上传。
 

@@ -6,6 +6,28 @@ Only recorded changes and their validation boundaries are described here. A rele
 
 这里只记录改动与验证边界；出现版本标题不表示资产已经发布。
 
+## 0.1.3 — 2026-10-28
+
+**Usability release: larger settings controls, a full-width log toggle, a quieter settings sheet and a simpler icon. / 易用性版本：设置控件更大、日志可整条点击、设置页更安静、图标更简洁。**
+
+Release: [v0.1.3](https://github.com/nocmt/nxlauncher/releases/tag/v0.1.3). Same packaging and signing path as 0.1.2: Developer ID signed, hardened runtime, not notarized and not stapled.
+
+Release：[v0.1.3](https://github.com/nocmt/nxlauncher/releases/tag/v0.1.3)。打包与签名方式同 0.1.2：Developer ID 签名、hardened runtime、未公证、未 staple。
+
+- Per-game language, frame rate and operation mode are now custom segmented buttons: each option is a 30-point-tall target with its whole cell clickable, 102-155 points wide, replacing the small native segmented control. Selecting one still writes the per-game setting immediately.
+- The build log header is one full-width button (about 1057 points wide); clicking the title, the count or the chevron expands it, and the expanded state shows the log and its actions.
+- The general settings sheet no longer shows the log text. It keeps "open log", "save diagnostics" and "copy all", plus a one-line count, so the sheet stays readable.
+- The app icon is simplified to a soft red gradient tile with a single rounded warm-white launch triangle, replacing the layered portal.
+- Nothing changed in the build, export, dependency or diagnostics behavior.
+
+对应中文：
+
+- 每款游戏的游戏语言、目标帧率、运行模式改为自绘分段按钮：每个选项高 30 点、整格可点、宽 102–155 点，替代原来偏小的系统分段控件；选择后仍立即写入该游戏设置。
+- 构建日志标题改为整条按钮（约 1057 点宽），点标题、条数或箭头都能展开，展开后显示日志内容与操作按钮。
+- 通用设置页不再显示日志正文，只保留“打开日志／保存诊断包／复制全部”和一行条数，页面更清爽。
+- 图标简化为柔和红色渐变底加一个圆润的暖白启动三角，替换原来的层叠门结构。
+- 构建、导出、依赖与诊断行为未改动。
+
 ## 0.1.2 — 2026-10-28
 
 **Published as a GitHub prerelease: Developer ID signed, not notarized, not stapled. / 已作为 GitHub 预发布版发布：Developer ID 签名，未公证、未 staple。**

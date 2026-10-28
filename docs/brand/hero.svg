@@ -1,88 +1,63 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="640" viewBox="0 0 1600 640" role="img" aria-labelledby="heroTitle heroDesc">
   <title id="heroTitle">NxLauncher</title>
-  <desc id="heroDesc">Your library. A new launch. An original warm-white library portal on a vivid red background.</desc>
+  <desc id="heroDesc">Your library. A new launch. An original red launch icon on a warm neutral backdrop.</desc>
   <defs>
-    <linearGradient id="canvas" x1=".05" y1="0" x2=".95" y2="1"><stop stop-color="#ff625c"/><stop offset=".5" stop-color="#e6242c"/><stop offset="1" stop-color="#bd0d1b"/></linearGradient>
-    <radialGradient id="halo" cx=".78" cy=".4" r=".62"><stop stop-color="#fff2ec" stop-opacity=".3"/><stop offset="1" stop-color="#c1101c" stop-opacity="0"/></radialGradient>
-    <linearGradient id="rule" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#fff6f2"/><stop offset="1" stop-color="#fff6f2" stop-opacity="0"/></linearGradient>
-    <linearGradient id="word" x1="0" y1="0" x2=".7" y2="1"><stop stop-color="#ffffff"/><stop offset="1" stop-color="#ffe6e2"/></linearGradient>
+    <linearGradient id="canvas" x1=".05" y1="0" x2=".95" y2="1"><stop stop-color="#fbf7f3"/><stop offset=".55" stop-color="#f3ece5"/><stop offset="1" stop-color="#e9ded5"/></linearGradient>
+    <radialGradient id="halo" cx=".79" cy=".46" r=".6"><stop stop-color="#ff5b52" stop-opacity=".2"/><stop offset="1" stop-color="#ff5b52" stop-opacity="0"/></radialGradient>
+    <linearGradient id="rule" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#d8111f"/><stop offset="1" stop-color="#d8111f" stop-opacity="0"/></linearGradient>
+    <linearGradient id="word" x1="0" y1="0" x2=".7" y2="1"><stop stop-color="#1d1013"/><stop offset="1" stop-color="#4a2027"/></linearGradient>
   </defs>
   <rect width="1600" height="640" rx="28" fill="url(#canvas)"/>
   <rect width="1600" height="640" rx="28" fill="url(#halo)"/>
-  <rect x=".75" y=".75" width="1598.5" height="638.5" rx="27.25" fill="none" stroke="#ffd9d4" stroke-opacity=".35" stroke-width="1.5"/>
-  <!-- Quiet drafting traces echo the angle of the original library strata. -->
-  <g fill="none" stroke="#ffd0cb" stroke-width="1">
-    <path d="M788 410L1192 176Q1210 166 1228 176L1580 379" stroke="#ff9d97" stroke-opacity=".5"/>
-    <path d="M788 447L1192 213Q1210 203 1228 213L1580 416" stroke="#ff8a83" stroke-opacity=".42"/>
-    <path d="M788 484L1192 250Q1210 240 1228 250L1580 453" stroke="#ff7a72" stroke-opacity=".34"/>
+  <rect x=".75" y=".75" width="1598.5" height="638.5" rx="27.25" fill="none" stroke="#7a3b38" stroke-opacity=".16" stroke-width="1.5"/>
+  <!-- Quiet drafting traces echo the angle of the reference's soft diagonal light. -->
+  <g fill="none" stroke-width="1">
+    <path d="M788 410L1192 176Q1210 166 1228 176L1580 379" stroke="#d8b6a9" stroke-opacity=".55"/>
+    <path d="M788 447L1192 213Q1210 203 1228 213L1580 416" stroke="#d8b6a9" stroke-opacity=".45"/>
+    <path d="M788 484L1192 250Q1210 240 1228 250L1580 453" stroke="#d8b6a9" stroke-opacity=".35"/>
   </g>
-  <path d="M104 144H158" stroke="#ffe9e5" stroke-width="3" stroke-linecap="round"/>
-  <text x="180" y="150" fill="#ffd9d4" font-family="'Avenir Next',Avenir,'Trebuchet MS',sans-serif" font-size="17" font-weight="600" letter-spacing="4">LIBRARY / BUILD / LAUNCH</text>
+  <path d="M104 144H158" stroke="#d8111f" stroke-width="3" stroke-linecap="round"/>
+  <text x="180" y="150" fill="#8d5a55" font-family="'Avenir Next',Avenir,'Trebuchet MS',sans-serif" font-size="17" font-weight="600" letter-spacing="4">LIBRARY / BUILD / LAUNCH</text>
   <text x="99" y="302" fill="url(#word)" font-family="'Avenir Next',Avenir,'Trebuchet MS',sans-serif" font-size="105" font-weight="650" letter-spacing="-5">NxLauncher</text>
-  <text x="106" y="371" fill="#ffe3df" font-family="'Avenir Next',Avenir,'Trebuchet MS',sans-serif" font-size="31" font-weight="400" letter-spacing=".1">Your library. A new launch.</text>
-  <path d="M106 432H604" stroke="url(#rule)" stroke-opacity=".5"/>
-  <text x="106" y="489" fill="#ffcfc9" font-family="'Avenir Next',Avenir,'Trebuchet MS',sans-serif" font-size="18" letter-spacing="1">A considered home for your games.</text>
+  <text x="106" y="371" fill="#5d4340" font-family="'Avenir Next',Avenir,'Trebuchet MS',sans-serif" font-size="31" font-weight="400" letter-spacing=".1">Your library. A new launch.</text>
+  <path d="M106 432H604" stroke="url(#rule)" stroke-opacity=".45"/>
+  <text x="106" y="489" fill="#7a5c56" font-family="'Avenir Next',Avenir,'Trebuchet MS',sans-serif" font-size="18" letter-spacing="1">A considered home for your games.</text>
   <svg x="915" y="19" width="602" height="602" viewBox="0 0 1024 1024" aria-labelledby="iconTitle iconDesc">
 
-  <title id="iconTitle">NxLauncher — launch strata</title>
-  <desc id="iconDesc">Original vector artwork. A bright red tile carries three warm-white library strata, a rose-red launch portal and a crystalline launch key. No third-party logo or game artwork.</desc>
+  <title id="iconTitle">NxLauncher — launch</title>
+  <desc id="iconDesc">Original vector artwork. A soft vivid-red rounded tile with one rounded warm-white launch triangle. No third-party logo or game artwork.</desc>
   <defs>
-    <linearGradient id="tile" x1=".12" y1="0" x2=".88" y2="1">
-      <stop stop-color="#ff5f5a"/><stop offset=".38" stop-color="#e9232c"/><stop offset=".78" stop-color="#d21522"/><stop offset="1" stop-color="#b80d1b"/>
+    <linearGradient id="tile" x1=".1" y1="0" x2=".9" y2="1">
+      <stop stop-color="#ff7f70"/><stop offset=".42" stop-color="#f32a34"/><stop offset=".78" stop-color="#e01322"/><stop offset="1" stop-color="#c40d1b"/>
     </linearGradient>
-    <radialGradient id="wash" cx=".3" cy=".08" r=".85">
-      <stop stop-color="#fff4ef" stop-opacity=".28"/><stop offset=".62" stop-color="#ffd9d6" stop-opacity=".06"/><stop offset="1" stop-color="#8c0a14" stop-opacity="0"/>
+    <radialGradient id="wash" cx=".28" cy=".06" r=".9">
+      <stop stop-color="#fff2ee" stop-opacity=".34"/><stop offset=".58" stop-color="#ffd6d1" stop-opacity=".07"/><stop offset="1" stop-color="#a80c16" stop-opacity="0"/>
     </radialGradient>
-    <linearGradient id="tileRim" x1="0" y1="0" x2="1" y2="1">
-      <stop stop-color="#fff2ea" stop-opacity=".72"/><stop offset=".42" stop-color="#ffc9c2" stop-opacity=".16"/><stop offset="1" stop-color="#8e0b16" stop-opacity=".34"/>
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#fff2ec" stop-opacity=".7"/><stop offset=".45" stop-color="#ffc9c3" stop-opacity=".12"/><stop offset="1" stop-color="#8e0a15" stop-opacity=".3"/>
     </linearGradient>
-    <linearGradient id="bottom" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fff7f5"/><stop offset=".46" stop-color="#ffd9d7"/><stop offset="1" stop-color="#eea9a9"/></linearGradient>
-    <linearGradient id="middle" x1="0" y1="0" x2=".9" y2="1"><stop stop-color="#ffffff"/><stop offset=".46" stop-color="#ffe8e6"/><stop offset="1" stop-color="#ffc5c4"/></linearGradient>
-    <linearGradient id="middleEdge" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#c63b40"/><stop offset=".5" stop-color="#f08d8a"/><stop offset="1" stop-color="#b92a31"/></linearGradient>
-    <linearGradient id="portalEdge" x1="0" y1="0" x2="1" y2=".4"><stop stop-color="#c21d27"/><stop offset=".46" stop-color="#ff7168"/><stop offset=".53" stop-color="#ef4a45"/><stop offset="1" stop-color="#9d101b"/></linearGradient>
-    <linearGradient id="portal" x1=".12" y1="0" x2=".82" y2="1"><stop stop-color="#ffffff"/><stop offset=".3" stop-color="#fff1ef"/><stop offset=".66" stop-color="#ffdbd9"/><stop offset="1" stop-color="#ffc2c1"/></linearGradient>
-    <linearGradient id="well" x1="0" y1="0" x2=".6" y2="1"><stop stop-color="#760812"/><stop offset=".5" stop-color="#a8121e"/><stop offset="1" stop-color="#d0353a"/></linearGradient>
-    <linearGradient id="wellRim" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#a30e19"/><stop offset="1" stop-color="#ffb9b4"/></linearGradient>
-    <linearGradient id="launch" x1="0" y1="0" x2=".5" y2="1"><stop stop-color="#fffdfb"/><stop offset="1" stop-color="#ffe2df"/></linearGradient>
-    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#ffffff" stop-opacity=".22"/><stop offset=".55" stop-color="#ffffff" stop-opacity=".05"/><stop offset="1" stop-color="#ffffff" stop-opacity="0"/></linearGradient>
-    <clipPath id="tileClip"><rect x="100" y="100" width="824" height="824" rx="192"/></clipPath>
+    <linearGradient id="glyph" x1=".2" y1="0" x2=".75" y2="1">
+      <stop stop-color="#ffffff"/><stop offset=".5" stop-color="#fff4f1"/><stop offset="1" stop-color="#ffd5cf"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#ffffff" stop-opacity=".26"/><stop offset=".55" stop-color="#ffffff" stop-opacity=".05"/><stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <clipPath id="tileClip"><rect x="100" y="100" width="824" height="824" rx="200"/></clipPath>
   </defs>
   <!-- The 100px safe margin follows the optical size of macOS app tiles. -->
-  <rect x="110" y="122" width="804" height="804" rx="184" fill="#4a040b" opacity=".14"/>
-  <rect x="104" y="112" width="816" height="816" rx="190" fill="#4a040b" opacity=".22"/>
-  <rect x="100" y="100" width="824" height="824" rx="192" fill="url(#tile)"/>
-  <rect x="100" y="100" width="824" height="824" rx="192" fill="url(#wash)"/>
+  <rect x="108" y="120" width="808" height="808" rx="194" fill="#5c020c" opacity=".13"/>
+  <rect x="103" y="110" width="818" height="818" rx="198" fill="#5c020c" opacity=".2"/>
+  <rect x="100" y="100" width="824" height="824" rx="200" fill="url(#tile)"/>
+  <rect x="100" y="100" width="824" height="824" rx="200" fill="url(#wash)"/>
   <g clip-path="url(#tileClip)">
-    <rect x="100" y="100" width="824" height="430" fill="url(#sheen)"/>
+    <rect x="100" y="100" width="824" height="420" fill="url(#gloss)"/>
   </g>
-  <rect x="101.5" y="101.5" width="821" height="821" rx="190.5" fill="none" stroke="url(#tileRim)" stroke-width="3"/>
-  <!-- Wide, deliberately quiet contact shadows, built without raster effects. -->
-  <ellipse cx="512" cy="755" rx="230" ry="48" fill="#5c020c" opacity=".18"/>
-  <ellipse cx="512" cy="752" rx="198" ry="34" fill="#5c020c" opacity=".26"/>
-  <ellipse cx="512" cy="749" rx="160" ry="21" fill="#5c020c" opacity=".22"/>
-  <!-- Lowest library stratum: its projecting rim remains legible at 16px. -->
-  <path d="M230 586Q216 578 230 570L498 415Q512 407 526 415L794 570Q808 578 794 586L526 750Q512 758 498 750Z" fill="#b3393c"/>
-  <path d="M230 568Q216 560 230 552L498 397Q512 389 526 397L794 552Q808 560 794 568L526 723Q512 731 498 723Z" fill="url(#bottom)"/>
-  <path d="M232 567L499 722Q512 730 525 722L792 567" fill="none" stroke="#ff8d86" stroke-width="3" opacity=".55"/>
-  <!-- Second stratum, with a machined rose-metal edge. -->
-  <path d="M230 520Q216 512 230 504L498 349Q512 341 526 349L794 504Q808 512 794 520L526 684Q512 692 498 684Z" fill="url(#middleEdge)"/>
-  <path d="M230 498Q216 490 230 482L498 327Q512 319 526 327L794 482Q808 490 794 498L526 653Q512 661 498 653Z" fill="url(#middle)"/>
-  <path d="M232 497L499 652Q512 660 525 652L792 497" fill="none" stroke="#fffaf8" stroke-width="3" opacity=".92"/>
-  <!-- Top portal: a continuous original rounded rhombus, inset into a solid rim. -->
-  <path d="M220 450Q204 440 220 430L496 270Q512 261 528 270L804 430Q820 440 804 450L528 622Q512 632 496 622Z" fill="url(#portalEdge)"/>
-  <path d="M220 425Q204 415 220 405L496 245Q512 236 528 245L804 405Q820 415 804 425L528 585Q512 595 496 585Z" fill="url(#portal)"/>
-  <path d="M222 405L497 246Q512 237 527 246L802 405" fill="none" stroke="#ffffff" stroke-opacity=".9" stroke-width="3"/>
-  <path d="M222 426L497 585Q512 594 527 585L802 426" fill="none" stroke="#ff9c97" stroke-opacity=".6" stroke-width="2.5"/>
-  <path d="M334 420Q325 414 334 408L499 313Q512 305 525 313L690 408Q699 414 690 420L525 516Q512 524 499 516Z" fill="#a71520"/>
-  <path d="M334 429Q325 423 334 417L499 322Q512 314 525 322L690 417Q699 423 690 429L525 525Q512 533 499 525Z" fill="url(#well)"/>
-  <path d="M334 429L499 525Q512 533 525 525L690 429" fill="none" stroke="url(#wellRim)" stroke-width="3"/>
-  <!-- Subtle precision lines travel along the face, not through the silhouette. -->
-  <path d="M258 414L451 302M573 302L766 414" fill="none" stroke="#ffffff" stroke-opacity=".2" stroke-width="2"/>
-  <!-- A raised forward launch key; pure geometry, no third-party symbol assets. -->
+  <rect x="101.5" y="101.5" width="821" height="821" rx="198.5" fill="none" stroke="url(#rim)" stroke-width="3"/>
+  <!-- One simple, rounded geometry: the launch key. -->
+  <ellipse cx="512" cy="668" rx="128" ry="17" fill="#6d030d" opacity=".15"/>
   <g id="launch-key">
-  <path d="M475 379Q468 375 468 384V480Q468 489 476 485L561 438Q570 433 561 428Z" fill="#4d010a" opacity=".5" transform="translate(0 9)"/>
-  <path d="M475 374Q468 370 468 379V475Q468 484 476 480L561 433Q570 428 561 423Z" fill="url(#launch)"/>
-  <path d="M474 377L559 426" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
+    <path d="M400 370 L400 654 L630 512 Z" fill="#8e0a14" opacity=".16" transform="translate(1 10)" stroke="#8e0a14" stroke-width="86" stroke-linejoin="round"/>
+    <path d="M400 370 L400 654 L630 512 Z" fill="url(#glyph)" stroke="url(#glyph)" stroke-width="86" stroke-linejoin="round"/>
   </g>
 
   </svg>

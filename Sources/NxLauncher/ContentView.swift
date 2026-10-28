@@ -28,7 +28,7 @@ struct ContentView: View {
                         }
                         globalSettings
                         buildEnvironment
-                        log
+                        logActions
                     }.padding(24)
                 }.frame(width: 640, height: 580)
             }
@@ -86,8 +86,7 @@ struct ContentView: View {
                     if state.busy { progressStrip }
                     gameData
                     settings
-                    DisclosureGroup("构建日志（\(state.logLines.count) 条）", isExpanded: $showLog) { log }
-                        .font(.system(size: 12, weight: .medium))
+                    logSection
                 }
                 .padding(24)
                 .frame(maxWidth: 1120, alignment: .leading).frame(maxWidth: .infinity)
@@ -292,33 +291,31 @@ struct ContentView: View {
     }
 
     private var languageChoice: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 8) {
             Text("游戏语言").font(.system(size: 12, weight: .medium))
-            Picker("游戏语言", selection: $state.language) {
-                ForEach(LauncherState.Language.allCases) { language in Text(language.rawValue).tag(language) }
-            }.labelsHidden().pickerStyle(.segmented).frame(width: 248)
+            SegmentedChoice(options: LauncherState.Language.allCases.map {
+                SegmentedChoice<LauncherState.Language>.Option(value: $0, label: $0.rawValue)
+            }, selection: $state.language, minWidth: 282)
         }
         .onChange(of: state.language) { _, _ in state.runtimeSettingsChanged() }
     }
 
     private var fpsChoice: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 8) {
             Text("目标帧率").font(.system(size: 12, weight: .medium))
-            Picker("目标帧率", selection: $state.targetFPS) {
-                Text("60 帧").tag(60)
-                Text("30 帧").tag(30)
-            }.labelsHidden().pickerStyle(.segmented).frame(width: 136)
+            SegmentedChoice(options: [.init(value: 60, label: "60 帧"), .init(value: 30, label: "30 帧")],
+                            selection: $state.targetFPS, minWidth: 170)
         }
         .onChange(of: state.targetFPS) { _, _ in state.runtimeSettingsChanged() }
     }
 
     private var modeChoice: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 8) {
             Text("运行模式").font(.system(size: 12, weight: .medium))
-            Picker("运行模式", selection: $state.opMode) {
-                Text("掌机 720p").tag(LauncherState.OpMode.handheld)
-                Text("主机 1080p").tag(LauncherState.OpMode.console)
-            }.labelsHidden().pickerStyle(.segmented).frame(width: 220)
+            SegmentedChoice(options: [
+                .init(value: LauncherState.OpMode.handheld, label: "掌机 720p"),
+                .init(value: LauncherState.OpMode.console, label: "主机 1080p"),
+            ], selection: $state.opMode, minWidth: 262)
         }
         .help(modeHint)
         .onChange(of: state.opMode) { _, _ in state.runtimeSettingsChanged() }
@@ -516,6 +513,57 @@ struct ContentView: View {
     }
 
     // MARK: - the log
+
+    /// The log header is one full-width button: clicking the title, the count or the chevron
+    /// expands it, which is a much larger target than the disclosure triangle alone.
+    private var logSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button {
+                withAnimation(.easeOut(duration: 0.18)) { showLog.toggle() }
+            } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(showLog ? 90 : 0))
+                    Text("构建日志（\(state.logLines.count) 条）")
+                        .font(.system(size: 12, weight: .medium))
+                    Spacer(minLength: 0)
+                    Text(showLog ? "收起" : "展开")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .background(RoundedRectangle(cornerRadius: DS.small, style: .continuous).fill(DS.quiet))
+            .accessibilityLabel(showLog ? "收起构建日志" : "展开构建日志")
+            if showLog { log }
+        }
+    }
+
+    /// The settings sheet keeps the log actions but not the log text: reading a build log belongs
+    /// in the workspace, next to the build it describes.
+    private var logActions: some View {
+        Card(title: "日志与诊断", systemImage: "doc.text.magnifyingglass") {
+            Text("完整日志可能包含本机路径；仅保存在本地，不会自动上传。")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                Button("打开日志") { state.openLogs() }.buttonStyle(QuietButtonStyle())
+                Button("保存诊断包…") { state.saveDiagnostics() }.buttonStyle(QuietButtonStyle())
+                    .disabled(state.busy || !state.canOperate)
+                Button { state.copyCompleteLog() } label: { Label("复制全部", systemImage: "doc.on.doc") }
+                    .buttonStyle(QuietButtonStyle())
+                    .disabled(state.logURL == nil && state.logLines.isEmpty)
+                Spacer(minLength: 0)
+            }
+            Text(state.logLines.isEmpty ? "暂无日志；检查环境和构建过程会记录在这里。"
+                                        : "当前 \(state.logLines.count) 条日志；内容在工作区的“构建日志”区域查看。")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+        }
+    }
 
     private var log: some View {
         VStack(alignment: .trailing, spacing: 8) {

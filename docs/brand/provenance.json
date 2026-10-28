@@ -1,8 +1,8 @@
 {
-  "name": "NxLauncher / Launch Strata",
+  "name": "NxLauncher / Launch",
   "origin": "Original hand-authored SVG geometry created for NxLauncher; no generated-image API, stock assets, third-party logos, game artwork, embedded bitmap images or external downloads.",
-  "concept": "A vivid red lacquer macOS tile carrying warm-white library strata, a rose-white launch portal and a crimson launch well. Individually tuned surface, bevel, inset, reflection and shadow gradients; no hue filter, no decorative holiday motifs, no replica of any console or company mark.",
-  "reference": "Project home screen's blue stacked-library motif for composition, plus the user's own supplied red rounded-square application icon for the palette and red/white contrast; conceptual inspiration only. Neither reference asset is copied: no control-pill shapes, no circular buttons and no third-party marks appear in this artwork.",
+  "concept": "A vivid red lacquer macOS tile with a soft top-left highlight and one simple, rounded warm-white launch triangle with a soft contact shadow. Deliberately one shape: no layered panels, no bevel rings, no console or company mark.",
+  "reference": "The owner supplied a red rounded-square icon with a soft red gradient and a single rounded emblem, and asked for that background treatment with a simpler, rounder geometry. Only the palette, the corner radius and the one-glyph composition follow it; no shape, character or asset from the reference is traced or embedded.",
   "sources": [
     "app-icon.svg",
     "build-hero.py",
@@ -20,26 +20,23 @@
     "hero-preview.png": "1600 x 640 local AppKit preview; SVG remains the README asset",
     "icon-sizes.png": "960 x 640 contact sheet; actual 16, 32, 64, 128, 256 pixel renders on light/dark backgrounds"
   },
-  "optical_adjustment": "The launch key is enlarged 1.5x at 16px and 1.2x at 32px by render.swift; all other geometry remains shared with the editable SVG master.",
+  "optical_adjustment": "The triangle is enlarged 1.12x at 16px and 1.05x at 32px by render.swift; the master SVG carries one shared geometry.",
   "palette": {
-    "tileRed": "#E9232C",
-    "tileHighlight": "#FF5F5A",
-    "tileShade": "#B80D1B",
-    "warmWhite": "#FFFDFB",
-    "roseWhite": "#FFC5C4",
-    "crimson": "#A8121E",
-    "wellDeep": "#760812"
+    "tileHighlight": "#FF7F70",
+    "tileRed": "#F32A34",
+    "tileShade": "#C40D1B",
+    "launchWhite": "#FFF4F1",
+    "launchWhiteEdge": "#FFD5CF"
   },
   "typography": "hero.svg uses an editable Avenir Next / Avenir / Trebuchet MS / sans-serif fallback stack. Exact text shapes may vary by GitHub viewer's installed fonts; layout reserves room for fallback metrics.",
   "readme_usage": "![NxLauncher — Your library. A new launch.](docs/brand/hero.svg)",
   "verification": [
     "Opened the previous ICNS raster before replacement.",
-    "Visually reviewed the 1024px PNG, 1600px hero and light/dark small-size contact sheet.",
-    "16/32px optical correction preserves the diamond aperture and warm-white launch key.",
+    "Visually reviewed the 1024px PNG and the 1600px hero.",
+    "16/32px optical correction preserves the triangle silhouette.",
     "Parsed both SVGs as XML and checked they are self-contained.",
     "Decoded ICNS representations and checked their dimensions and alpha.",
-    "Warm revision: visually reviewed 1024px icon, 1600px hero and actual 16/32/64/128/256px light/dark previews; verified all 10 ICNS representations and exact 1024px PNG match.",
-    "Red revision: reviewed the user-supplied reference icon, then reviewed the 1024px PNG and the actual 16/32/64/128/256px contact sheet on light and dark backgrounds; contact sheet shows the aperture and key stay legible at 16px."
+    "Simplified revision: reviewed the owner's reference, then reviewed the 1024px PNG and the actual 16/32/64/128/256px contact sheet on light and dark backgrounds; the triangle stays legible at 16px."
   ],
-  "revision": "Second warm revision: palette moved to the user's preferred vivid red and warm white, and the strata became light panels over a red tile. Layer/portal composition and the 16/32px optical corrections are retained. Still original geometry; no asset from the reference icon is embedded. No release or version increment."
+  "revision": "Simplified geometry at the owner's request: one rounded launch triangle on a soft red gradient, replacing the layered portal. Warm-neutral banner background so the red tile reads as the subject. Still entirely original; no reference asset is embedded."
 }

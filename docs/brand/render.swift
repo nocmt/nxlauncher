@@ -24,9 +24,9 @@ func render(_ source: URL, _ output: URL, width: Int, height: Int) throws {
     var svg = try String(contentsOf: source, encoding: .utf8)
     // Optical correction keeps the launch key readable in Finder list views.
     if source.lastPathComponent == "app-icon.svg", width <= 32 {
-        let scale = width <= 16 ? 1.5 : 1.2
+        let scale = width <= 16 ? 1.12 : 1.05
         svg = svg.replacingOccurrences(of: "<g id=\"launch-key\">", with:
-            "<g id=\"launch-key\" transform=\"translate(516 427) scale(\(scale)) translate(-516 -427)\">")
+            "<g id=\"launch-key\" transform=\"translate(515 512) scale(\(scale)) translate(-515 -512)\">")
     }
     guard let image = NSImage(data: Data(svg.utf8)),
           let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width,
