@@ -28,6 +28,7 @@ struct ContentView: View {
                         }
                         globalSettings
                         buildEnvironment
+                        log
                     }.padding(24)
                 }.frame(width: 640, height: 580)
             }
@@ -53,6 +54,9 @@ struct ContentView: View {
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            if state.canOperate && !state.busy && !state.installingDependencies { state.checkDependencies() }
+        }
         .preferredColorScheme(state.appearance.colorScheme)
         .animation(.easeOut(duration: 0.22), value: state.toast)
     }
@@ -69,6 +73,16 @@ struct ContentView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     header
+                    if state.preparing || !state.preparationError.isEmpty {
+                        HStack {
+                            Text(state.preparing ? state.statusText : "工具准备失败：\(state.preparationError)").font(.system(size: 12)).foregroundStyle(DS.warn)
+                            Spacer()
+                            if !state.preparing { Button("重试准备") { state.retryPreparation() }.buttonStyle(QuietButtonStyle()) }
+                        }
+                    }
+                    if !state.errorHint.isEmpty {
+                        Text("建议：\(state.errorHint)").font(.system(size: 12)).foregroundStyle(DS.warn).textSelection(.enabled)
+                    }
                     if state.busy { progressStrip }
                     gameData
                     settings
@@ -233,6 +247,13 @@ struct ContentView: View {
             .background(DS.row, in: RoundedRectangle(cornerRadius: DS.small, style: .continuous))
             .frame(maxWidth: .infinity, alignment: .leading)
 
+            if let plan = state.plan {
+                Text("构建状态：\(plan.buildStatus ?? (plan.built ? "ready" : "missing")) · \(plan.graphicsAPI ?? "auto")")
+                    .font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
+                ForEach(plan.shaderWarnings ?? [], id: \.self) { warning in
+                    Text("着色器警告：\(warning)").font(.system(size: 11)).foregroundStyle(DS.warn).textSelection(.enabled)
+                }
+            }
             if let notes = state.plan?.notes, !notes.isEmpty {
                 VStack(alignment: .leading, spacing: 3) {
                     ForEach(notes, id: \.self) { n in
@@ -251,38 +272,56 @@ struct ContentView: View {
 
     private var settings: some View {
         Card(title: "游戏设置", systemImage: "slider.horizontal.3") {
-            VStack(spacing: 0) {
-                settingRow("游戏语言") {
-                    Picker("", selection: $state.language) {
-                        ForEach(LauncherState.Language.allCases) { l in Text(l.rawValue).tag(l) }
-                    }.labelsHidden().frame(width: 190)
-                        .onChange(of: state.language) { _, _ in state.runtimeSettingsChanged() }
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 20) {
+                    languageChoice
+                    fpsChoice
+                    modeChoice
                 }
-                Divider().padding(.leading, 12)
-                settingRow("目标帧率") {
-                    Picker("", selection: $state.targetFPS) {
-                        Text("60 帧").tag(60)
-                        Text("30 帧（省电）").tag(30)
-                    }
-                    .labelsHidden()
-                    .frame(width: 160)
-                    .onChange(of: state.targetFPS) { _, _ in state.runtimeSettingsChanged() }
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack(alignment: .top, spacing: 20) { languageChoice; fpsChoice }
+                    modeChoice
                 }
-                Divider().padding(.leading, 12)
-                settingRow("运行模式") {
-                    Picker("", selection: $state.opMode) {
-                        ForEach(LauncherState.OpMode.allCases) { m in Text(m.rawValue).tag(m) }
-                    }
-                    .labelsHidden()
-                    .frame(width: 190)
-                    .onChange(of: state.opMode) { _, _ in state.runtimeSettingsChanged() }
-                }
-                .help(modeHint)
+                VStack(alignment: .leading, spacing: 14) { languageChoice; fpsChoice; modeChoice }
             }
+            .padding(12)
             .disabled(state.busy)
             .background(DS.row, in: RoundedRectangle(cornerRadius: DS.small, style: .continuous))
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private var languageChoice: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("游戏语言").font(.system(size: 12, weight: .medium))
+            Picker("游戏语言", selection: $state.language) {
+                ForEach(LauncherState.Language.allCases) { language in Text(language.rawValue).tag(language) }
+            }.labelsHidden().pickerStyle(.segmented).frame(width: 248)
+        }
+        .onChange(of: state.language) { _, _ in state.runtimeSettingsChanged() }
+    }
+
+    private var fpsChoice: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("目标帧率").font(.system(size: 12, weight: .medium))
+            Picker("目标帧率", selection: $state.targetFPS) {
+                Text("60 帧").tag(60)
+                Text("30 帧").tag(30)
+            }.labelsHidden().pickerStyle(.segmented).frame(width: 136)
+        }
+        .onChange(of: state.targetFPS) { _, _ in state.runtimeSettingsChanged() }
+    }
+
+    private var modeChoice: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("运行模式").font(.system(size: 12, weight: .medium))
+            Picker("运行模式", selection: $state.opMode) {
+                Text("掌机 720p").tag(LauncherState.OpMode.handheld)
+                Text("主机 1080p").tag(LauncherState.OpMode.console)
+            }.labelsHidden().pickerStyle(.segmented).frame(width: 220)
+        }
+        .help(modeHint)
+        .onChange(of: state.opMode) { _, _ in state.runtimeSettingsChanged() }
     }
 
     private var keysSetting: some View {
@@ -336,6 +375,29 @@ struct ContentView: View {
 
     private var buildEnvironment: some View {
         Card(title: "编译环境", systemImage: "wrench.and.screwdriver") {
+            HStack {
+                Text("构建目标").font(.system(size: 12))
+                Picker("构建目标", selection: $state.buildTarget) {
+                    ForEach(LauncherState.BuildTarget.allCases) { target in Text(target.label).tag(target) }
+                }.labelsHidden().pickerStyle(.segmented).frame(width: 160)
+                    .disabled(state.busy || state.installingDependencies || state.checkingDependencies)
+                    .onChange(of: state.buildTarget) { _, _ in state.buildTargetChanged() }
+                Spacer()
+            }
+            HStack(spacing: 12) {
+                Button("Xcode 官网") { state.openOfficialURL("https://developer.apple.com/xcode/") }
+                Button("Apple 下载（Metal）") { state.openOfficialURL("https://developer.apple.com/download/all/") }
+                Button("Homebrew 官网") { state.openOfficialURL("https://brew.sh/") }
+                Button("Python 官网") { state.openOfficialURL("https://www.python.org/downloads/macos/") }
+            }.buttonStyle(.link).font(.system(size: 10))
+            if state.preparing { Text(state.statusText).font(.system(size: 12)).foregroundStyle(DS.warn) }
+            if !state.preparationError.isEmpty {
+                Text("准备失败：\(state.preparationError)").font(.system(size: 11)).foregroundStyle(DS.bad)
+                Button("重试准备") { state.retryPreparation() }.buttonStyle(QuietButtonStyle())
+            }
+            if state.installingDependencies {
+                HStack { ProgressView().controlSize(.small); Text("安装中，完整输出见下方日志…").font(.system(size: 12)) }
+            }
             if state.checkingDependencies && state.dependencies == nil {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
@@ -376,6 +438,14 @@ struct ContentView: View {
                             }.padding(.vertical, 8)
                         }.frame(height: 240)
                     }
+                    ForEach((report.repairs ?? []).filter { $0.approvedArguments != nil }) { repair in
+                        Button { state.installDependency(repair) } label: {
+                            Label("授权安装 \(repair.argv.dropFirst(2).joined(separator: " "))…", systemImage: "arrow.down.circle")
+                        }.buttonStyle(QuietButtonStyle())
+                            .disabled(state.busy || state.installingDependencies || state.checkingDependencies || !state.canOperate)
+                    }
+                    Text("安装需逐项确认。Xcode、Metal、Homebrew 与 Python 请按官网指引手动安装；返回应用后自动复检。")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
                     if !report.commands.isEmpty {
                         Text(report.commands.joined(separator: "\n"))
                             .font(.system(size: 10, design: .monospaced))
@@ -406,26 +476,32 @@ struct ContentView: View {
                 .truncationMode(.middle)
             Spacer(minLength: 8)
             Button {
-                if state.plan?.built == true { state.launchGame() } else { state.startBuild() }
+                if state.buildTarget == .mac && state.plan?.isBuilt(for: "mac") == true { state.launchGame() } else { state.startBuild() }
             } label: {
-                Label(state.plan?.built == true ? "开始游戏" : "开始编译",
-                      systemImage: state.plan?.built == true ? "play.fill" : "hammer.fill")
+                Label(state.buildTarget == .mac && state.plan?.isBuilt(for: "mac") == true ? "开始游戏" : "开始编译",
+                      systemImage: state.buildTarget == .mac && state.plan?.isBuilt(for: "mac") == true ? "play.fill" : "hammer.fill")
             }
             .buttonStyle(PrimaryButtonStyle(enabled: !state.busy))
             .frame(width: 148)
-            .disabled(state.busy)
+            .disabled(state.busy || !state.canOperate)
+            Menu {
+                Button("重新构建（保留提取结果与存档）") { state.startBuild(rebuild: true) }
+                Button("重新构建着色器") { state.startBuild(shadersOnly: true) }
+            } label: { Image(systemName: "arrow.clockwise") }
+                .menuStyle(.borderlessButton).frame(width: 28)
+                .disabled(state.busy || !state.canOperate || state.plan == nil)
 
             Button { state.exportMacApp() } label: {
                 Label("导出 .app…", systemImage: "app.dashed")
             }
             .buttonStyle(SecondaryButtonStyle())
-            .disabled(state.busy || state.plan?.built != true)
+            .disabled(state.busy || !state.canOperate || state.plan?.isBuilt(for: "mac") != true)
 
             Button { state.exportUnsignedIPA() } label: {
                 Label("导出 IPA…", systemImage: "square.and.arrow.down")
             }
             .buttonStyle(SecondaryButtonStyle())
-            .disabled(state.busy || state.plan?.built != true)
+            .disabled(state.busy || !state.canOperate || state.plan?.isBuilt(for: "ios") != true)
         }
     }
 
@@ -443,14 +519,17 @@ struct ContentView: View {
 
     private var log: some View {
         VStack(alignment: .trailing, spacing: 8) {
-            Button {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(state.logLines.joined(separator: "\n"), forType: .string)
-            } label: {
-                Label("复制全部", systemImage: "doc.on.doc")
+            HStack(spacing: 10) {
+                Text("完整日志可能包含本机路径；仅保存在本地，不会自动上传。")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Button("打开日志") { state.openLogs() }.buttonStyle(QuietButtonStyle())
+                Button("保存诊断包…") { state.saveDiagnostics() }.buttonStyle(QuietButtonStyle())
+                    .disabled(state.busy || !state.canOperate)
+                Button { state.copyCompleteLog() } label: { Label("复制全部", systemImage: "doc.on.doc") }
+                    .buttonStyle(QuietButtonStyle())
+                    .disabled(state.logURL == nil && state.logLines.isEmpty)
             }
-            .buttonStyle(QuietButtonStyle())
-            .disabled(state.logLines.isEmpty)
             BuildLogView(lines: state.logLines)
                 .frame(height: 200)
                 .background(DS.row)

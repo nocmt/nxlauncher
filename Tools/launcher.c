@@ -7,6 +7,8 @@
 #include <dirent.h>
 #include <errno.h>
 #include <mach-o/dyld.h>
+#include <pwd.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -91,7 +93,14 @@ int main(int argc, char **argv) {
     char res[4096], sup[4096], host[4096], patched[4096], log[4096];
     snprintf(res, sizeof res, "%s/Contents/Resources", bundle);
     const char *home = getenv("HOME");
-    if (!home || !*home) home = "/Users/guxiu";
+    if (!home || !*home) {
+        struct passwd *pw = getpwuid(getuid());
+        home = pw ? pw->pw_dir : NULL;
+    }
+    if (!home || !*home) {
+        fprintf(stderr, "cannot determine current user's home directory\n");
+        return 1;
+    }
     snprintf(sup, sizeof sup, "%s/Library/Application Support/" APP_SUPPORT_NAME, home);
     // An export from before the fixed support home kept the saves under the .app's own name; bring
     // that folder over before anything creates the new one.
@@ -118,7 +127,8 @@ int main(int argc, char **argv) {
     make_dirs(temp);
 
     char romfs[4096], msl[4096], shmap[4096], fonts[4096], aoc[4096];
-    snprintf(romfs, sizeof romfs, "%s/romfs", res);
+    snprintf(romfs, sizeof romfs, "%s/romfs.img", res);
+    if (access(romfs, R_OK) != 0) snprintf(romfs, sizeof romfs, "%s/romfs", res);
     snprintf(msl, sizeof msl, "%s/msl", res);
     snprintf(shmap, sizeof shmap, "%s/dm/shader_map.tsv", res);
     snprintf(fonts, sizeof fonts, "%s/font", res);

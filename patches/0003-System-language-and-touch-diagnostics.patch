@@ -1,0 +1,163 @@
+From: NxLauncher maintainers
+Subject: [PATCH] Preserve system language scripts and synchronized touch diagnostics
+
+Based on official main 201dfd1280684e9d3ceac8b644236fdac11b6cc2.
+
+diff --git a/dm/host/hle_hid.c b/dm/host/hle_hid.c
+index 148fdb3c7d37b12def59723447408646744bab31..47a72f43f5644f2475abe73e473e2560bdfd7fb3 100644
+--- a/dm/host/hle_hid.c
++++ b/dm/host/hle_hid.c
+@@ -560,6 +560,14 @@ HLE_FORCE("_ZN2nn3hid28ShowControllerFirmwareUpdateERKNS0_27ControllerFirmwareUp
+ // without checking the mode, so in console mode the state stays empty (only the header is written). Super Mario Galaxy's pointer is the touch screen in handheld mode
+ int touch_fill_n(void *out, int max, uint64_t now_ns);
+ static void touch_read(void *s, int n) {
++    // DM_TOUCH_LOG=1: the reads themselves (does the game ask for the touch state at all, and in
++    // which operation mode) plus the points it gets (in hle_touch.c).
++    static _Atomic unsigned long reads;
++    unsigned long read = atomic_fetch_add_explicit(&reads, 1, memory_order_relaxed) + 1;
++    static _Atomic int lg = -1;
++    int enabled = atomic_load_explicit(&lg, memory_order_relaxed);
++    if (enabled < 0) { enabled = getenv("DM_TOUCH_LOG") != NULL; atomic_store_explicit(&lg, enabled, memory_order_relaxed); }
++    if (enabled && (read <= 4 || read % 300 == 0)) LOG("[hid] the game reads the touch screen state (read %lu, the operation mode is %d, %d slots)", read, dm_opmode(), n);
+     if (dm_opmode() == 0) { touch_fill_n(s, n, now_ns()); return; }
+     int64_t *p = s; p[0] = atomic_fetch_add(&g_sampling, 1) + 1; ((int32_t *)s)[2] = 0; ((int32_t *)s)[3] = 0;
+ }
+diff --git a/dm/host/hle_oe.c b/dm/host/hle_oe.c
+index d6eb5b238dd7cf60e3dec09df5e4e8d38442c102..9b475070c15129e588f0461e3017d629074d664c 100644
+--- a/dm/host/hle_oe.c
++++ b/dm/host/hle_oe.c
+@@ -1,14 +1,24 @@
+ // nn::oe (application operating environment): on the real device the console state is queried through the am/oe services; the host gives fixed state directly.
+ // oe::Initialize is in hle_sdkinit.c, not here.
+-// Environment switches: DM_OPMODE=0 handheld / 1 console (default: the profile's op_mode, console unless set; console corresponds to the console-mode render profile); DM_LANG=language code (default en-US; the iOS app sets it from the IPA's DMLanguage, main.m).
++// Environment switches: DM_OPMODE=0 handheld / 1 console (default: the profile's op_mode, console unless set; console corresponds to the console-mode render profile); DM_LANG=language code (Mac fallback: supported preferred system language; iOS: IPA DMLanguage, otherwise en-US).
+ #include "hle.h"
++#include <TargetConditionals.h>
++#include <ctype.h>
++#if TARGET_OS_OSX
++#include <CoreFoundation/CoreFoundation.h>
++#endif
+ 
+ // The operation mode is runtime state (the front end can change it: iOS overheat downgrade switches to handheld): the single source is here, taken once from DM_OPMODE at startup, the environment variable is not read again afterwards
+ #include <stdatomic.h>
+ static _Atomic int g_opmode = -1;
+ int dm_opmode(void) {
+     int m = g_opmode;
+-    if (m < 0) { const char *e = getenv("DM_OPMODE"); int v = e ? atoi(e) : DM_GAME_OPMODE; int exp = -1; atomic_compare_exchange_strong(&g_opmode, &exp, v); m = g_opmode; }
++    if (m < 0) {
++        const char *e = getenv("DM_OPMODE"); int v = e ? atoi(e) : DM_GAME_OPMODE, exp = -1;
++        if (atomic_compare_exchange_strong(&g_opmode, &exp, v))
++            LOG("[oe] operation mode=%d (%s), DM_OPMODE=%s profile=%d", v, v == 0 ? "handheld" : "console", e ? e : "(not set)", DM_GAME_OPMODE);
++        m = g_opmode;
++    }
+     return m;
+ }
+ // ---------- System notification queue (AppletMessage): front end state changes → fetched by the game every frame with TryPopNotificationMessage ----------
+@@ -223,11 +233,51 @@ HLE_FORCE("_ZN2nn2oe28SetResumeNotificationEnabledEb", "resume notification swit
+ HLE_FORCE("_ZN2nn2oe42SetOperationModeChangedNotificationEnabledEb", "operation mode change notification switch", void, h_oe_SetOpModeNtf, unsigned on) { g_ntf_opmode = on & 0xff; }
+ HLE_FORCE("_ZN2nn2oe44SetPerformanceModeChangedNotificationEnabledEb", "performance mode change notification switch", void, h_oe_SetPerfModeNtf, unsigned on) { g_ntf_perfmode = on & 0xff; }
+ 
+-// nn::settings::LanguageCode = struct { char string[8]; }, 8 bytes returned by value in x0
+-HLE_FORCE("_ZN2nn2oe18GetDesiredLanguageEv", "system language query; value from DM_LANG", uint64_t, h_oe_GetLang, void) {
++// Explicit DM_LANG wins. Mac system tags preserve script and regional variants;
++// unsupported system languages use English, as does an iOS build without DMLanguage.
++#if TARGET_OS_OSX
++static const char *mac_language_tag(const char *tag) {
++    char t[128] = {0}; unsigned i = 0;
++    for (; tag && tag[i] && i < sizeof t - 1; i++) t[i] = tag[i] == '_' ? '-' : (char)tolower((unsigned char)tag[i]);
++    if ((!strncmp(t, "zh", 2) && (!t[2] || t[2] == '-')) || (!strncmp(t, "yue", 3) && (!t[3] || t[3] == '-'))) {
++        if (strstr(t, "-hans")) return "zh-Hans";
++        if (strstr(t, "-hant") || strstr(t, "-tw") || strstr(t, "-hk") || strstr(t, "-mo") || !strncmp(t, "yue", 3)) return "zh-Hant";
++        return "zh-Hans";
++    }
++    static const char *const tags[] = {"ja", "fr", "de", "es", "it", "nl", "pt", "ru", "ko"};
++    for (unsigned j = 0; j < sizeof tags / sizeof *tags; j++) if (!strncmp(t, tags[j], 2) && (!t[2] || t[2] == '-')) {
++        if (!strcmp(tags[j], "fr") && strstr(t, "-ca")) return "fr-CA";
++        if (!strcmp(tags[j], "es") && (strstr(t, "-419") || strstr(t, "-mx"))) return "es-419";
++        if (!strcmp(tags[j], "pt") && strstr(t, "-br")) return "pt-BR";
++        return tags[j];
++    }
++    return !strncmp(t, "en-gb", 5) ? "en-GB" : "en-US";
++}
++static const char *mac_system_language(void) {
++    const char *code = "en-US";
++    CFArrayRef languages = CFLocaleCopyPreferredLanguages();
++    if (languages) {
++        char tag[128];
++        if (CFArrayGetCount(languages) > 0 && CFStringGetCString((CFStringRef)CFArrayGetValueAtIndex(languages, 0), tag, sizeof tag, kCFStringEncodingUTF8))
++            code = mac_language_tag(tag);
++        CFRelease(languages);
++    }
++    return code;
++}
++#endif
++static const char *desired_language(void) {
+     const char *e = getenv("DM_LANG");
++    if (e && *e) return e;
++#if TARGET_OS_OSX
++    return mac_system_language();
++#else
++    return "en-US";
++#endif
++}
++// nn::settings::LanguageCode = struct { char string[8]; }, 8 bytes returned by value in x0
++HLE_FORCE("_ZN2nn2oe18GetDesiredLanguageEv", "system language query; DM_LANG, otherwise Mac preferred language or en-US", uint64_t, h_oe_GetLang, void) {
+     char code[8] = {0};
+-    strncpy(code, e && *e ? e : "en-US", sizeof code - 1);
++    strncpy(code, desired_language(), sizeof code - 1);
+     uint64_t v; memcpy(&v, code, 8);
+     return v;
+ }
+@@ -235,7 +285,7 @@ HLE_FORCE("_ZN2nn2oe18GetDesiredLanguageEv", "system language query; value from
+ // The console's region (Animal Crossing: New Horizons 3.0.3): the SDK asks settings::system::GetRegionCode, which reaches set:sys. A region that fits the language the game is given:
+ // 0 Japan, 1 the Americas, 2 Europe, 4 Hong Kong / Taiwan / Korea (nn::settings::system::RegionCode; 3 Australia and 5 China are left out, no language points at them alone)
+ HLE_FORCE("_ZN2nn2oe13GetRegionCodeEv", "console region (set:sys); from DM_LANG", int, h_oe_GetRegion, void) {
+-    const char *e = getenv("DM_LANG"); if (!e || !*e) e = "en-US";
++    const char *e = desired_language();
+     int r = !strncmp(e, "ja", 2) ? 0 : !strncmp(e, "ko", 2) || !strncmp(e, "zh", 2) ? 4 : !strcmp(e, "en-US") || !strcmp(e, "fr-CA") || !strcmp(e, "es-419") || !strcmp(e, "pt-BR") ? 1 : 2;
+     static int once; if (!once++) LOG("oe::GetRegionCode: %d for language %s", r, e);
+     return r;
+diff --git a/dm/host/tests/t_language.c b/dm/host/tests/t_language.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..9d3f53f3a0ae7269f050e198b7fd535ebb9e5701
+--- /dev/null
++++ b/dm/host/tests/t_language.c
+@@ -0,0 +1,38 @@
++// Reuse the oe service test's host stubs without running its notification suite twice.
++#define main oe_notification_test_main
++#include "t_oe.c"
++#undef main
++#include <assert.h>
++static void expect_code(const char *want) {
++    uint64_t result = h_oe_GetLang(); char code[8]; memcpy(code, &result, 8);
++    assert(!strcmp(code, want));
++    int region = !strncmp(want, "ja", 2) ? 0 :
++        !strncmp(want, "ko", 2) || !strncmp(want, "zh", 2) ? 4 :
++        !strcmp(want, "en-US") || !strcmp(want, "fr-CA") ||
++        !strcmp(want, "es-419") || !strcmp(want, "pt-BR") ? 1 : 2;
++    assert(h_oe_GetRegion() == region);
++}
++int main(void) {
++#if TARGET_OS_OSX
++    const char *tags[][2] = {{"zh-Hans-HK", "zh-Hans"}, {"zh-Hans-CN", "zh-Hans"}, {"zh-Hant-TW", "zh-Hant"}, {"ZH_hk", "zh-Hant"},
++        {"yue-Hant-HK", "zh-Hant"}, {"ja-JP", "ja"}, {"de-DE", "de"}, {"fr-CA", "fr-CA"},
++        {"en-GB", "en-GB"}, {"pt_BR", "pt-BR"}, {"es-MX", "es-419"}, {"unknown", "en-US"}};
++    for (unsigned i = 0; i < sizeof tags / sizeof *tags; i++) assert(!strcmp(mac_language_tag(tags[i][0]), tags[i][1]));
++    assert(!strcmp(mac_language_tag(NULL), "en-US"));
++#endif
++    const char *explicit[] = {"ja", "ko", "de", "fr", "fr-CA", "pt-BR", "zh-Hant", "zh-Hans", "en-US", "en-GB", "es-419"};
++    for (unsigned i = 0; i < sizeof explicit / sizeof *explicit; i++) { setenv("DM_LANG", explicit[i], 1); expect_code(explicit[i]); }
++    unsetenv("DM_LANG");
++#if TARGET_OS_OSX
++    expect_code(mac_system_language());
++#else
++    expect_code("en-US");
++#endif
++    setenv("DM_LANG", "", 1);
++#if TARGET_OS_OSX
++    expect_code(mac_system_language());
++#else
++    expect_code("en-US");
++#endif
++    puts("language: script-preserving tag fallback and verbatim explicit DM_LANG precedence passed");
++}

@@ -1,155 +1,165 @@
+<div align="center">
+
+<img src="docs/brand/hero.svg" alt="NxLauncher — your library, a clearer path to native builds" width="920" />
+
 # NxLauncher
 
-A macOS app for the [nxnative](https://github.com/seedds/nxnative) pipeline: point it at a game's
-NSP/XCI, and it builds the IPA, runs the game, and exports what you want to hand to someone.
+**Your library. A clearer path to native builds.**
 
-![the window](docs/screenshot.png)
+A macOS launcher for the [nxnative](https://github.com/seedds/nxnative) pipeline.
+Organize your own game dumps, inspect the toolchain, build, and export a Mac app or iOS IPA.
 
-## What it does
+[![Version](https://img.shields.io/badge/version-0.1.2-C72835)](CHANGELOG.md)
+[![Platform](https://img.shields.io/badge/host-Apple%20Silicon-111827)](#requirements)
+[![Runtime](https://img.shields.io/badge/game%20runtime-macOS%2026%2B-087F8C)](#requirements)
+[![Pipeline](https://img.shields.io/badge/powered%20by-nxnative-555)](https://github.com/seedds/nxnative)
 
-| | |
+**English · [简体中文](README.zh-CN.md)**
+
+[**Download latest release**](https://github.com/nocmt/nxlauncher/releases/latest) · [Quick start](#quick-start) · [Tested games](docs/tested-games.md) · [Troubleshooting](docs/troubleshooting.md)
+
+</div>
+
+> **0.1.2 preview status:** the repository is still private and there is no public download yet. A **Developer ID–signed, unnotarized** build exists locally and passed its content audit, but publication is on hold: older revisions of `docs/screenshot.png` in this repository's history contain third-party game cover artwork, which must not be published. See [release procedure](docs/releasing.md) for the exact blobs and the available paths forward. The local manifest records the delivered asset's signature verification; the binary is not notarized.
+
+## A library that builds
+
+| | What you get |
 |---|---|
-| **Game library** | Remembers multiple game folders with artwork, version and build status. Select a tile to inspect it or open its workspace. Removing a record leaves the original files, build output and saves intact. |
-| **Game data** | The folder with the base game (NSP **or** XCI), the update and the DLC. The app sorts them out, reads the icon and the name out of the game, and says whether the game has a port (a profile in `dm/games/`). |
-| **Several files** | A folder can hold more than one update and more than one DLC. The row shows how many, and opening it lists them one by one -- the title ID first, because it always fits, and then the name without it. Hover a line for the full path. |
-| **Host keys** | A shared `prod.keys` path in the library's General Settings, remembered between launches. The key file stays in its original location. No firmware: the pipeline does not use one. |
-| **Settings** | General Settings holds appearance, host keys and build environment diagnostics. Each game's workspace holds its frame rate, language and operation mode (handheld 720p / console 1080p), saved to its own `env.txt`. |
-| **Build log** | Read-only native text with multiline selection, standard Copy/Select All shortcuts and a Copy All button. |
-| **Start** | Compiles the game the first time (30–60 minutes, the shaders), then starts it. |
-| **Export** | The Mac `.app` and the iOS IPA. Each export asks where to put it: the export is written from the work folder, so it is a new copy every time. |
+| **One home for your games** | Folder references, game identity, versions and build status. Removing a library entry leaves source files, outputs and saves on disk. |
+| **Inspect before building** | Separate base game, updates and DLC; check key-file availability, game profiles and target-specific dependencies. |
+| **Mac first** | `build` defaults to Mac, exports a `.app` on success and does not launch it automatically. |
+| **An explicit iOS path** | Select iOS for an IPA. Installation needs suitable signing and a supported physical device. |
+| **Visible progress** | Copyable build output, stage logs and session-oriented diagnostic ZIP export. |
+| **Per-game settings** | Frame-rate target, game language and handheld/console mode are arranged as horizontal segmented single-choice controls and saved in each game's settings file. The launcher UI is primarily Chinese. |
+| **Guided dependencies** | Missing-tool guidance and confirmation before fixed-allowlist Homebrew installation. Xcode and Homebrew setup use official guides. |
 
-## Install
+NxLauncher automates a build workflow. Compatibility depends on the exact game/update, upstream profile, graphics backend and host. **A profile is not a compatibility test.**
+
+## Quick start
+
+1. Get `NxLauncher.app` from [Releases](https://github.com/nocmt/nxlauncher/releases/latest) once `v0.1.2` is published. Extract the archive before opening it.
+2. Open **通用设置 / 编译环境** and check the **Mac** target. Follow missing-tool guidance; review the package list before confirming an installation.
+3. Add one game folder with your legally obtained base NSP/XCI and matching update/DLC. Select your own `prod.keys` in General Settings; the file stays at its original location.
+4. Check the detected title, update and profile, then build for **Mac**. First-time shader work can be lengthy; keep the logs.
+5. Open the exported `.app` explicitly. Check rendering, input, sound and save/load before treating the result as usable.
+
+No firmware input is required by this pipeline. No game dumps, keys or download sources are supplied. Exported apps/IPAs can contain copyrighted game data; exporting does not grant permission to redistribute them.
+
+## Requirements
+
+| Task | Requirements and boundaries |
+|---|---|
+| Launcher UI | Apple Silicon Mac. The Swift package declares macOS 14+; this does **not** make the game runtime compatible with macOS 14. |
+| Build/play a Mac game | Plan for **macOS 26+**, full Xcode with macOS SDK and Metal tools, plus `doctor --target mac` dependencies. **Mac does not require the iOS SDK.** |
+| Build an iOS IPA | A compatible Mac build host, iPhoneOS SDK, target-specific tools and appropriate signing/provisioning. Check `doctor --target ios`. |
+| Extraction/rewrite/shaders | Compatible arm64 .NET 10 SDK **and** runtime, `zstd`, `spirv-cross`, and the Python modules reported by diagnostics. iOS also uses `xcodegen`. |
+| Source development | Swift/Xcode, Git and Python 3.12+; `bootstrap.sh` prepares a repository-local virtual environment. |
+
+The packaged launcher includes its tools archive, Python and Python wheels. It still needs the system build toolchain. Exported Mac games carry runtime resources but still need a compatible OS/GPU and game-specific support. Allow disk space for the original dump, extraction, shader caches and every export; there is no universal duration or storage guarantee.
+
+Official setup: [Xcode](https://developer.apple.com/xcode/) · [Homebrew](https://brew.sh/) · [.NET 10](https://dotnet.microsoft.com/download/dotnet/10.0).
+
+## Games with local packaging evidence
+
+These are **historical results**. **None has been revalidated through gameplay on the final 0.1.2 baseline.**
+
+| Game / version | Historical packaging | Supported runtime statement |
+|---|---|---|
+| The Legend of Zelda: Echoes of Wisdom · **1.1.0 / `v196608`** | Mac export and IPA records | User confirmed normal Mac packaging/gameplay on 2026-10-23; bounded graphics/input runs are documented. No whole-game or iOS-device claim. |
+| The Legend of Zelda: Breath of the Wild · **1.9.0 / `v1114112`** | nxnative IPA completion log; historical Mac packaging record | Separate nxnative Mac log reaches frame 2100 and exits gracefully on SIGTERM. Limited execution; **MacNativeGames' 117 FPS result is excluded**. |
+| Animal Crossing: New Horizons · **3.0.3 / `v2228224`** | IPA completion log and retained nxnative Mac app metadata | nxnative log records frame submission and DLC enumeration, but also `[RED]` reports. Limited execution, not clean full-game validation. |
+
+[Evidence ledger, versions and limitations →](docs/tested-games.md). `games` lists profiles, not tested games.
+
+## Command-line shortest path
+
+Run from a prepared source checkout. Commands emit JSON events, one per line. Replace the example paths with your own.
 
 ```bash
-git clone <this repository> nxlauncher
+python3 Tools/pack_pipeline.py doctor --target mac
+python3 Tools/pack_pipeline.py plan --target mac \
+  --game-dir "$HOME/Games/MyGame" --keys "$HOME/Keys/prod.keys"
+python3 Tools/pack_pipeline.py build --target mac \
+  --game-dir "$HOME/Games/MyGame" --keys "$HOME/Keys/prod.keys"
+```
+
+`build` defaults to `--target mac`, exports the Mac app and does not start it. Use `--target ios` consistently in `doctor`, `plan` and `build` for iOS.
+
+| Option / command | Purpose |
+|---|---|
+| `--graphics-api auto\|nvn\|vulkan\|gl` | Graphics selection for `build`, `doctor` and `export`; start with `auto`. A selectable backend is not universal game support. |
+| `build --rebuild` | Explicit rebuild instead of relying on reusable build state. Preserve logs and saves first. |
+| `build --rebuild-shaders` | Rebuild shader artifacts when investigating stale/incompatible shader state; expect expensive work. |
+| `games` | List upstream game profiles. |
+| `diagnostics --out ZIP [--session ID]` | Export diagnostics, optionally for a selected session. Inspect before sharing. |
+
+```bash
+python3 Tools/pack_pipeline.py diagnostics --out "$HOME/Desktop/NxLauncher-diagnostics.zip"
+python3 Tools/pack_pipeline.py diagnostics \
+  --out "$HOME/Desktop/NxLauncher-session.zip" --session SESSION_ID
+```
+
+Existing-work export uses different target names:
+
+```bash
+python3 Tools/pack_pipeline.py export --target mac-app \
+  --game 01007EF00011E000 --ver v1114112 \
+  --work "$HOME/Games/MyGame/01007EF00011E000_build" \
+  --out "$HOME/Desktop/MyGame.app"
+```
+
+Other export targets are `ios-ipa` and `ios-ipa-unsigned`. An unsigned IPA needs signing; signing alone does not guarantee installation or execution. See [packaging practice](docs/打包最佳实践.md).
+
+## Where your data lives
+
+| Data | Location / behavior |
+|---|---|
+| Original game and keys | Your selected paths. Keep keys out of repositories and reports. |
+| Library/global preferences | macOS `UserDefaults`: folder references and metadata. |
+| Build workspace/stage logs | `<game-folder>/<TITLE_ID>_build/`, including `logs/`, extraction and caches. Completion manifests are `.nxlauncher/build-mac.json` and `build-ios.json`; old files alone do not mean a complete current build. |
+| Pipeline sessions | `~/Library/Application Support/NxLauncher/Pipeline/sessions/<SESSION_ID>/`; `NXLAUNCHER_STATE_DIR` can override the state root. |
+| Packaged launcher's extracted tools | `~/Library/Caches/NxLauncher/home`; separate from saves. |
+| Current Mac game's saves/settings/log | `~/Library/Application Support/nxnative/<TITLE_ID>/`: `save/`, `env.txt`, `log.txt`, `temp/`. |
+| Older exported games | May use an app-name folder under Application Support. Back up both locations before migration; the launcher follows the selected app's layout. |
+| Diagnostic ZIP | Your `--out` destination. Logs can expose paths, environment/tool versions and failure details. |
+
+Back up saves before upgrades. Removing a library entry is not disk cleanup. Do not delete Application Support to refresh build caches.
+
+## Build NxLauncher from source
+
+```bash
+git clone https://github.com/nocmt/nxlauncher.git
 cd nxlauncher
-./bootstrap.sh          # the nxnative submodule + our patches + the toolchain check
+./bootstrap.sh
+swift run NxLauncher
 ```
 
-`bootstrap.sh` prepares the submodule and patches, creates a repository-local Python virtual
-environment, installs its Python packages and builds the launcher. It does **not** install system
-tools: it reports missing Xcode components, `xcodegen`, `zstd`, `spirv-cross` and the arm64 .NET 10
-SDK/runtime. `./bootstrap.sh --check` is read-only.
-
-The app checks its build environment on launch and again before a build. The **编译环境** section
-shows missing dependencies and installation guidance; it never runs installers or changes system
-configuration. Full builds need Xcode with the iPhoneOS SDK and Metal tools, Make/Clang, `xcodegen`,
-`zstd`, `spirv-cross`, .NET 10, and Python 3.12+ with `lz4`, `capstone`, `fonttools`, `Pillow` and
-zstd support (`backports.zstd` before Python 3.14). Homebrew is optional if the tools are installed
-another way. This pipeline does not require separate `cmake`, `ninja`, `opus` or `libvpx` packages:
-libvpx is built from upstream's bundled source and Opus uses the game SDK decoder.
-
-The launcher supplies a GUI-safe PATH and discovers the .NET runtime root, including Homebrew's
-`libexec` layout. It passes `DOTNET_ROOT_ARM64` / `DOTNET_ROOT` to all build subprocesses, including
-`nx_extract`, so launching from Finder does not depend on shell startup files. Valid explicit .NET
-root overrides are preserved; diagnostics verify the selected arm64 SDK/runtime is compatible with
-.NET 10 rather than merely checking whether a `dotnet` command exists.
-
-## Run
+`bootstrap.sh` defaults to Mac; use `./bootstrap.sh --target ios` when preparing iOS. It prepares the submodule/patches, selects Python 3.12+, creates `.venv`, installs the inventory's pinned Python dependencies and builds the launcher. Compatible CPython 3.13 arm64 uses bundled wheels offline; other source-checkout interpreter ABIs may download exact pinned versions. It modifies the checkout. `./bootstrap.sh --check --target mac` skips setup/build but checks can still write temporary files or diagnostic sessions; it is not a zero-write guarantee. Use target-specific `doctor` for game requirements.
 
 ```bash
-swift run NxLauncher                      # the app
-swift run NxLauncher --game-dir ~/Games/BotW --keys ~/keys/prod.keys
-bash Scripts/make-app.sh                  # a double-clickable NxLauncher.app in dist/
+swift build -c release
+bash Scripts/make-app.sh
+python3 Tools/prepare-nxnative.py --check
+python3 -m unittest discover -s Tests -v
 ```
 
-## The app carries its own tools
+The app is written to `dist/NxLauncher.app`. Default exported-game fonts use open **NotoSansSC**; the helper has been checked locally, which does not guarantee every game's font coverage. See [third-party notices](THIRD_PARTY_NOTICES.md) for the reviewed distribution inventory.
 
-`Scripts/make-app.sh` puts everything the app needs into the bundle, in **one archive**
-(`Contents/Resources/nxlauncher-home.tgz`, about 50 MB): the pipeline, the upstream source tree, a
-standalone Python 3.13 and the wheels for `lz4` / `capstone` / `fontTools` / `Pillow` / `backports.zstd`.
+The coordinator confirmed upstream HEAD/base **`201dfd1280684e9d3ceac8b644236fdac11b6cc2`**, with **five functional patches** and prepared target tree **`a3814a41de5781b208525f25b6facabcf8cd423f`**. [`patches/base-commit`](patches/base-commit), [`patches/series`](patches/series) and [patch notes](patches/README.md) record the preparation contract. Host/graphics components and upstream Python checks have been exercised; no actual game was run for final 0.1.2 validation. Historical tests do not validate the current packaged game's behavior.
 
-So the `.app` can be handed to someone as a single file: it needs no repository, no Python and no
-`pip` on that machine. On the first run it unpacks the archive into
-`~/Library/Caches/NxLauncher/home` (not into the bundle: the bundle can be read-only, and the build
-writes into the tree) and installs the Python's packages from the wheels, offline.
+## Get unstuck
 
-What the app still needs from the machine it runs on:
+[Troubleshooting](docs/troubleshooting.md) provides concrete checks for dependencies, Finder/Terminal differences, inputs/keys, shaders, export failures, Gatekeeper, missing saves, graphics, iOS signing and diagnostic review. No AI assistant is required.
 
-| | |
-|---|---|
-| **Playing** | nothing -- the exported `.app` is all a player needs |
-| **Exporting a Mac .app** | Xcode's command line tools (the host is compiled) |
-| **Building the IPA** | the whole toolchain: Xcode, `xcodegen`, `.NET SDK 10`, `spirv-cross`, `zstd` |
-| **The game** | the NSP/XCI, the DLC and the keys -- the files themselves, of course |
+For a report include launcher version, target, OS/chip, title ID/update, graphics API, failing stage and a reviewed diagnostic ZIP. Do not attach keys, dumps, extracted game resources, saves or signing credentials. Public issue access follows repository publication: [Issues](https://github.com/nocmt/nxlauncher/issues).
 
-The archive is rebuilt by `Scripts/make-home-archive.sh` (it needs a standalone Python 3.13; `uv`
-keeps one in its cache).
+## Project boundaries
 
-## The pipeline from the command line
+- Primarily Chinese UI, with English and Chinese documentation.
+- No promise of all-game compatibility, whole-game completion, stable FPS or iOS-device success.
+- No game/key sourcing or permission to redistribute exported game content.
+- Developer ID is an optional signing path; this release plans a **Developer ID–signed, unnotarized preview**. Local/ad-hoc signature verification is a separate check.
+- NxLauncher source uses [LICENSE](LICENSE). Upstream, fonts and dependencies retain their own terms; distribution decisions require the reviewed [third-party notices](THIRD_PARTY_NOTICES.md).
 
-The app is a thin layer over `Tools/pack_pipeline.py`, which speaks the same JSON event stream the
-upstream packing script emits with `--progress json` (one JSON object per line). So everything the
-app does can be done from a terminal, and something else could drive it too:
-
-```bash
-python3 Tools/pack_pipeline.py plan   --game-dir ~/Games/BotW --keys ~/keys/prod.keys
-python3 Tools/pack_pipeline.py doctor                      # read-only build environment report
-python3 Tools/pack_pipeline.py games                       # the games that have a port
-python3 Tools/pack_pipeline.py build  --game-dir ~/Games/BotW --keys ~/keys/prod.keys
-python3 Tools/pack_pipeline.py export --target mac-app --game 01007EF00011E000 --ver v1114112 \
-                                     --work ~/Games/BotW/01007EF00011E000_build --out ~/Desktop/BotW.app
-python3 Tools/pack_pipeline.py export --target ios-ipa-unsigned --work <build dir> --out <the ipa>
-```
-
-## How it is put together
-
-```
-NxLauncher/
-├── Sources/NxLauncher/        the SwiftUI app (the window, the state, the process plumbing)
-├── Tools/
-│   ├── pack_pipeline.py       the orchestrator: plan / build / export, one JSON event stream
-│   ├── make-mac-app.sh        the Mac .app (any game with a profile)
-│   ├── make-signed-ipa.sh     the signed iOS IPA
-│   ├── make-unsigned-ipa.sh   the unsigned iOS IPA (for a colleague to re-sign)
-│   ├── launcher.c             the Mac .app's launcher (sets the environment, execs the host)
-│   ├── make-icns.py           the game's own icon.jpg -> .icns
-│   └── make-info-plist.py     the .app's Info.plist, from the profile
-├── patches/                   our changes to the upstream tree (see below)
-├── nxnative/                  the upstream tree, a submodule
-├── bootstrap.sh               the submodule + the patches + the toolchain check
-├── Resources/
-│   ├── AppIcon.icns           the launcher's icon (the Switch logo)
-│   └── wheels/                the Python packages, for the offline install in the app
-└── Scripts/
-    ├── make-app.sh            the launcher as a macOS .app
-    └── make-home-archive.sh   the archive the app carries (the tools + the tree + the Python)
-```
-
-### The patches
-
-The upstream tree is a submodule pinned to **`677345b0933f5f8754aeec3125d14df32683ca97`**
-(the upstream `main` fetched on 2026-10-22), not to an unpublished local commit. Our nine patches are
-maintained independently as an ordered patch series in `patches/series`; `patches/base-commit`
-records the exact upstream baseline. See [the patch inventory and upstream PRs](patches/README.md).
-
-```bash
-python3 Tools/prepare-nxnative.py          # apply the complete series to the pinned dependency
-python3 Tools/prepare-nxnative.py --check  # verify the complete resulting tree without changing it
-python3 -m unittest discover -s Tests -v # preparation safety and repeatability tests
-```
-
-Preparation keeps the submodule's HEAD at the upstream commit and leaves the patches as local
-working-tree changes. It refuses an unexpected baseline, staged edits, partially applied patches,
-and changes that do not match the complete series. `bootstrap.sh` prepares the dependency;
-`Scripts/make-home-archive.sh` verifies it before packaging, so a release cannot silently omit patches.
-
-The old `bc5815a` patch is retained under `patches/archive/` for reference only. Upstream's Mac
-controller bridge, fullscreen support and display pacing are used rather than replaced. The mouse
-routing and JSON progress contributions from [PR #48](https://github.com/seedds/nxnative/pull/48) and
-[PR #49](https://github.com/seedds/nxnative/pull/49) were adapted upstream in `b302d40` and `f1c4a6b`,
-with additional fixes by the maintainer; their local patches have been retired. When upstream adopts
-a patch, update the baseline, remove that patch from the series, and verify again.
-
-### What is not automated
-
-The pipeline is general: it takes any NSP/XCI + DLC + keys. What is **not** general is the port:
-a game needs a profile in `dm/games/` (its title ID, its modules, its memory split, its shader
-tables). The upstream script can write a survey and guess a provisional profile for a game that has
-none, and packs a best-effort IPA that **may not boot**. The available profiles are listed by
-`python3 Tools/pack_pipeline.py games`; this launcher automates those, not the porting.
-
-## License
-
-MIT (see LICENSE). The upstream tree keeps its own license. The game files belong to their owner:
-this repository ships **no** game data and no keys.
+[Changelog](CHANGELOG.md) · [Release process](docs/releasing.md) · [Privacy and diagnostics](docs/privacy.md) · [Upstream nxnative](https://github.com/seedds/nxnative)

@@ -2,6 +2,8 @@
 import AppKit
 import Foundation
 import SwiftUI
+import CryptoKit
+import Darwin
 
 @MainActor
 final class LauncherState: ObservableObject {
@@ -21,6 +23,23 @@ final class LauncherState: ObservableObject {
     @Published var checkingDependencies = false
     @Published var dependencyError = ""
     @Published var showDependencies = false
+    @Published var buildTarget: BuildTarget = .mac
+    @Published var preparing = false
+    @Published var preparationError = ""
+    @Published var installingDependencies = false
+    @Published var backendLogPath = ""
+    @Published var sessionID = ""
+    @Published var lastErrorID = ""
+    @Published var errorHint = ""
+    private(set) var logURL: URL?
+    enum BuildTarget: String, CaseIterable, Identifiable {
+        case mac, ios
+        var id: String { rawValue }
+        var label: String { self == .mac ? "Mac" : "iOS" }
+    }
+    var preparationReady: Bool { preparationArchive == nil || prepared }
+    var canOperate: Bool { preparationReady && !preparing && !installingDependencies }
+
 
     // --- the run ---
     @Published var busy: Bool = false
@@ -110,10 +129,15 @@ final class LauncherState: ObservableObject {
     let home: URL
     private let libraryStore: GameLibraryStore
     private let supportRoot: URL
+    private let preparationArchive: URL?
+    private let preparationCache: URL
     private var planRequest = 0
 
     init(defaults: UserDefaults = .standard, arguments: [String] = CommandLine.arguments,
-         home: URL? = nil, supportRoot: URL? = nil) {
+         home: URL? = nil, supportRoot: URL? = nil,
+         preparationArchive: URL? = LauncherState.bundledArchive(), preparationCache: URL = LauncherState.cacheDir) {
+        self.preparationArchive = preparationArchive
+        self.preparationCache = preparationCache
         self.home = home ?? LauncherState.findHome()
         self.libraryStore = GameLibraryStore(defaults: defaults)
         self.supportRoot = supportRoot ?? URL(fileURLWithPath: NSHomeDirectory())
@@ -146,6 +170,13 @@ final class LauncherState: ObservableObject {
             }
         }
         loadEnv()
+        let logs = self.supportRoot.appendingPathComponent("NxLauncher/Logs", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+            let file = logs.appendingPathComponent("launcher-\(UUID().uuidString).log")
+            try Data().write(to: file)
+            logURL = file
+        } catch { notify("无法建立完整日志：\(error.localizedDescription)", isError: true) }
     }
 
     private var selectedGame: LibraryGame? {
@@ -204,6 +235,8 @@ final class LauncherState: ObservableObject {
         statusText = "就绪"
         notice = ""
         noticeIsError = false
+        lastErrorID = ""
+        errorHint = ""
         toastToken &+= 1
         toast = nil
         toastIsWarning = false
@@ -231,6 +264,34 @@ final class LauncherState: ObservableObject {
         NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: game.folder)
     }
 
+    nonisolated static func validTitleID(_ id: String) -> Bool {
+        id.utf8.count == 16 && id.utf8.allSatisfy { (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }
+    }
+
+    func saveDirectory(for game: LibraryGame) -> URL? {
+        guard Self.validTitleID(game.titleID) else { return nil }
+        return supportRoot.appendingPathComponent("nxnative", isDirectory: true)
+            .appendingPathComponent(game.titleID, isDirectory: true).appendingPathComponent("save", isDirectory: true)
+    }
+
+    func openSaveDirectory(_ game: LibraryGame) {
+        guard let directory = saveDirectory(for: game) else {
+            notifyError("尚无有效的 16 位十六进制 Title ID，无法打开存档目录")
+            return
+        }
+        do {
+            // This action never runs legacy migration or touches another game's save.
+            let root = supportRoot.appendingPathComponent("nxnative", isDirectory: true).standardizedFileURL
+            let resolved = directory.resolvingSymlinksInPath().standardizedFileURL.path
+            let expected = root.resolvingSymlinksInPath().appendingPathComponent(game.titleID).appendingPathComponent("save").path
+            guard resolved == expected else {
+                throw NSError(domain: "NxLauncher", code: 1, userInfo: [NSLocalizedDescriptionKey: "存档目录符号链接偏离此游戏的固定目录"])
+            }
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            guard NSWorkspace.shared.open(directory) else { notifyError("Finder 无法打开存档目录"); return }
+        } catch { notifyError("无法打开存档目录：\(error.localizedDescription)") }
+    }
+
     /// Start the game from the command line, without the window.
     var launchOnly = false
 
@@ -249,8 +310,8 @@ final class LauncherState: ObservableObject {
             if fm.fileExists(atPath: dir.appendingPathComponent("Tools/pack_pipeline.py").path) { return dir }
         }
         // the shared app: it carries the archive, which is unpacked into the cache
-        if bundledArchive() != nil {
-            return cacheDir.appendingPathComponent("home")
+        if let archive = bundledArchive(), let digest = try? archiveDigest(archive) {
+            return cacheDir.appendingPathComponent("homes/\(digest)")
         }
         // the source tree this binary was built from
         let exe = URL(fileURLWithPath: CommandLine.arguments.first ?? "").deletingLastPathComponent()
@@ -310,61 +371,107 @@ final class LauncherState: ObservableObject {
     /// Unpack the archive and get the Python ready. It happens once: the stamp says whether the
     /// cache is already the archive's contents. It moves about 130 MB, so it runs off the main
     /// thread.
-    nonisolated static func unpackHome() throws {
-        guard let archive = bundledArchive() else { return }   // the sources: nothing to unpack
-        let fm = FileManager.default
-        let home = cacheDir.appendingPathComponent("home")
-        let stampFile = home.appendingPathComponent(".stamp")
-        let want = "\(archive.lastPathComponent)|\(fileStamp(of: archive))"
-        let have = (try? String(contentsOf: stampFile, encoding: .utf8)) ?? ""
-        if have != want {
-            try? fm.removeItem(at: home)
-            try fm.createDirectory(at: home, withIntermediateDirectories: true)
-            try run("/usr/bin/tar", ["-xzf", archive.path, "-C", home.path])
-            try want.write(to: stampFile, atomically: true, encoding: .utf8)
-        }
-        // the Python's packages, from the wheels in the archive (no network)
-        let libs = home.appendingPathComponent("py-libs")
-        let python = home.appendingPathComponent("python/bin/python3")
-        if fm.fileExists(atPath: python.path) {
-            var env = ProcessInfo.processInfo.environment
-            env["PYTHONPATH"] = libs.path
-            let packagesReady = (try? run(python.path, ["-c", "import lz4.block, capstone, fontTools, PIL; import compression.zstd"], env: env)) != nil
-                || (try? run(python.path, ["-c", "import lz4.block, capstone, fontTools, PIL, backports.zstd"], env: env)) != nil
-            if !packagesReady {
-                try? fm.createDirectory(at: libs, withIntermediateDirectories: true)
-                try run(python.path, ["-m", "pip", "install", "--quiet", "--no-index",
-                                      "--find-links", home.appendingPathComponent("wheels").path,
-                                      "--target", libs.path, "--upgrade", "--force-reinstall",
-                                      "lz4", "capstone", "fonttools", "pillow", "backports.zstd"], env: env)
-            }
-        }
+    nonisolated static func archiveDigest(_ archive: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: archive)
+        defer { try? handle.close() }
+        var hash = SHA256()
+        while let data = try handle.read(upToCount: 1024 * 1024), !data.isEmpty { hash.update(data: data) }
+        return hash.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
-    /// Unpack the app's archive (if it has one) and then run the closure. The window says what it
-    /// is doing meanwhile.
+    nonisolated static func unpackHome() throws {
+        guard let archive = bundledArchive() else { return }
+        _ = try unpackArchive(archive, cache: cacheDir)
+    }
+
+    /// Publish only a completely extracted, offline-installed and import-verified home.
+    /// A process-wide filesystem lock also serializes concurrent app instances.
+    nonisolated static func unpackArchive(_ archive: URL, cache: URL) throws -> URL {
+        let fm = FileManager.default
+        try fm.createDirectory(at: cache, withIntermediateDirectories: true)
+        let fd = Darwin.open(cache.appendingPathComponent("prepare.lock").path, O_CREAT | O_RDWR, mode_t(0o600))
+        guard fd >= 0 else { throw CocoaError(.fileWriteUnknown) }
+        defer { Darwin.close(fd) }
+        guard flock(fd, LOCK_EX) == 0 else { throw CocoaError(.fileWriteUnknown) }
+        defer { flock(fd, LOCK_UN) }
+        let digest = try archiveDigest(archive)
+        let homes = cache.appendingPathComponent("homes", isDirectory: true)
+        try fm.createDirectory(at: homes, withIntermediateDirectories: true)
+        let destination = homes.appendingPathComponent(digest, isDirectory: true)
+        if (try? String(contentsOf: destination.appendingPathComponent(".ready"), encoding: .utf8)) == digest {
+            return destination
+        }
+        let staging = homes.appendingPathComponent(".staging-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: staging) }
+        // Reject traversal names before extracting the trusted bundled payload.
+        let entries = try run("/usr/bin/tar", ["-tzf", archive.path]).split(separator: "\n")
+        guard entries.allSatisfy({ !$0.hasPrefix("/") && !$0.split(separator: "/").contains("..") }) else {
+            throw NSError(domain: "NxLauncher", code: 1, userInfo: [NSLocalizedDescriptionKey: "工具归档包含不安全路径"])
+        }
+        try run("/usr/bin/tar", ["-xzf", archive.path, "-C", staging.path])
+        let python = staging.appendingPathComponent("python/bin/python3")
+        guard fm.isExecutableFile(atPath: python.path),
+              fm.fileExists(atPath: staging.appendingPathComponent("Tools/pack_pipeline.py").path) else {
+            throw NSError(domain: "NxLauncher", code: 1, userInfo: [NSLocalizedDescriptionKey: "工具归档缺少 Python 或 pipeline"])
+        }
+        let libs = staging.appendingPathComponent("py-libs")
+        var env = ProcessInfo.processInfo.environment
+        env["PYTHONPATH"] = libs.path
+        env["PYTHONNOUSERSITE"] = "1"
+        let verify = "import lz4.block, capstone, fontTools, PIL; import importlib.util; importlib.import_module('compression.zstd' if importlib.util.find_spec('compression') else 'backports.zstd')"
+        if (try? run(python.path, ["-c", verify], env: env)) == nil {
+            try fm.createDirectory(at: libs, withIntermediateDirectories: true)
+            try run(python.path, ["-m", "pip", "install", "--no-index", "--disable-pip-version-check",
+                                  "--find-links", staging.appendingPathComponent("wheels").path,
+                                  "--target", libs.path, "--upgrade", "--force-reinstall",
+                                  "lz4", "capstone", "fonttools", "pillow", "backports.zstd"], env: env)
+        }
+        try run(python.path, ["-c", verify], env: env)
+        try digest.write(to: staging.appendingPathComponent(".ready"), atomically: true, encoding: .utf8)
+        // Never delete the previous cache/home. An incomplete colliding destination is retained.
+        if fm.fileExists(atPath: destination.path) {
+            try fm.moveItem(at: destination, to: homes.appendingPathComponent("\(digest)-incomplete-\(UUID().uuidString)"))
+        }
+        try fm.moveItem(at: staging, to: destination)
+        return destination
+    }
+
     func prepare(_ done: @escaping () -> Void) {
-        guard LauncherState.bundledArchive() != nil, !prepared else { done(); return }
-        statusText = "准备中（解包工具）"
+        guard !preparing else { return }
+        guard let archive = preparationArchive, !prepared else { done(); return }
+        let cache = preparationCache
+        preparing = true
+        preparationError = ""
+        statusText = "准备中（校验与解包工具）"
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var failure = ""
-            do { try LauncherState.unpackHome() } catch { failure = error.localizedDescription }
-            DispatchQueue.main.async {
-                if !failure.isEmpty { self?.notify("准备失败：\(failure)", isError: true) }
-                self?.prepared = true
+            do { _ = try LauncherState.unpackArchive(archive, cache: cache) } catch { failure = error.localizedDescription }
+            Task { @MainActor in
+                guard let self else { return }
+                self.preparing = false
+                guard failure.isEmpty else {
+                    self.preparationError = failure
+                    self.statusText = "准备失败，可重试"
+                    self.notify("准备失败：\(failure)", isError: true)
+                    return // no doctor / plan / games / build after a failed preparation
+                }
+                self.prepared = true
+                self.statusText = "就绪"
                 done()
             }
         }
     }
 
-    /// Whether the archive has already been unpacked.
-    private var prepared = false
-
-    /// A short description of a file, to tell one copy of the archive from another.
-    nonisolated private static func fileStamp(of url: URL) -> String {
-        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
-        return "\(values?.fileSize ?? 0)-\(values?.contentModificationDate?.timeIntervalSince1970 ?? 0)"
+    func retryPreparation() {
+        prepare {
+            self.checkDependencies()
+            self.loadGames()
+            if !self.gameDir.isEmpty { self.refreshPlan() }
+        }
     }
+
+    private var prepared = false
 
     /// Runs a tool and waits for it; it throws when the tool fails.
     @discardableResult
@@ -395,7 +502,7 @@ final class LauncherState: ObservableObject {
     func refreshPlan() { refreshPlan(deliverImmediately: false) }
 
     private func refreshPlan(deliverImmediately: Bool) {
-        guard !busy else { return }
+        guard !busy, canOperate else { return }
         let folder = LibraryGame.canonicalPath(gameDir)
         guard !folder.isEmpty else { planRequest &+= 1; plan = nil; return }
         // An explicit command-line folder (or legacy UI assignment) becomes a reference here.
@@ -409,7 +516,7 @@ final class LauncherState: ObservableObject {
         let request = planRequest
         plan = nil
         statusText = "读取游戏文件夹中"
-        var args = ["plan", "--game-dir", folder]
+        var args = ["plan", "--game-dir", folder, "--target", buildTarget.rawValue]
         if !keysPath.isEmpty { args += ["--keys", keysPath] }
         var immediateEvents: [PipelineEvent] = []
         do {
@@ -437,10 +544,15 @@ final class LauncherState: ObservableObject {
         guard !busy, selectedGameID == folder, gameDir == folder, planRequest == request else { return }
         if case .plan(let value) = event, !value.gameDir.isEmpty,
            LibraryGame.canonicalPath(value.gameDir) != folder { return }
+        if case .session(let id, let path) = event, !sessionID.isEmpty {
+            appendLog("读取计划会话 \(id) · Python 日志：\(path)")
+            return // retain the build/export session as the diagnostic selection
+        }
         handle(event)
     }
 
     func loadGames() {
+        guard canOperate else { return }
         do {
             try pipeline.run(["games"]) { [weak self] event in
                 DispatchQueue.main.async { self?.handle(event) }
@@ -451,16 +563,17 @@ final class LauncherState: ObservableObject {
     }
 
     func checkDependencies() {
-        guard !checkingDependencies else { return }
+        guard !checkingDependencies, canOperate, !busy else { return }
         checkingDependencies = true
         dependencies = nil
         dependencyError = ""
         let pipeline = self.pipeline
+        let target = buildTarget
         DispatchQueue.global(qos: .utility).async { [weak self] in
             var report: DependencyReport?
             var failure = ""
             do {
-                try pipeline.run(["doctor"]) { event in
+                try pipeline.run(["doctor", "--target", target.rawValue]) { event in
                     if case .dependencies(let value) = event {
                         report = value
                     } else if case .error(let message) = event {
@@ -472,10 +585,104 @@ final class LauncherState: ObservableObject {
                 failure = "依赖检查失败：\(error.localizedDescription)"
             }
             Task { @MainActor in
+                guard self?.buildTarget == target else { self?.checkingDependencies = false; self?.checkDependencies(); return }
                 self?.dependencies = failure.isEmpty ? report : nil
                 self?.dependencyError = failure
                 self?.showDependencies = report?.ready == false
                 self?.checkingDependencies = false
+            }
+        }
+    }
+
+    func buildTargetChanged() {
+        guard !busy, !installingDependencies else { return }
+        dependencies = nil
+        planRequest &+= 1
+        checkDependencies()
+        refreshPlan()
+    }
+
+    func installDependency(_ repair: DependencyRepair) {
+        guard canOperate, !busy, !checkingDependencies, let args = repair.approvedArguments else { return }
+        guard let brew = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"].first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            notify("未找到 Homebrew，请先从官网手动安装；不会自动安装 Homebrew", isError: true)
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "授权安装 Homebrew 工具？"
+        alert.informativeText = "将运行：\(brew) \(args.joined(separator: " "))\n安装会访问网络并写入 Homebrew。不会安装 Xcode 或 Homebrew。完整输出可在构建日志查看。"
+        alert.addButton(withTitle: "确认安装")
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        installingDependencies = true
+        statusText = "安装依赖中"
+        appendLog("用户授权：\(brew) \(args.joined(separator: " "))")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var failure: Error?
+            do {
+                try Pipeline.runTool(brew, args: args) { line in
+                    DispatchQueue.main.async { self?.appendLog(line) }
+                }
+            } catch { failure = error }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.installingDependencies = false
+                if let failure { self.notify("依赖安装失败：\(failure.localizedDescription)", isError: true) }
+                else { self.notify("依赖安装完成，正在重新检查") }
+                self.checkDependencies()
+            }
+        }
+    }
+
+    func openOfficialURL(_ address: String) {
+        let allowed = ["https://developer.apple.com/xcode/", "https://developer.apple.com/download/all/", "https://brew.sh/", "https://www.python.org/downloads/macos/"]
+        guard allowed.contains(address), let url = URL(string: address) else { return }
+        if !NSWorkspace.shared.open(url) { notify("无法打开官方下载安装页面", isError: true) }
+    }
+
+    var completeLog: String {
+        var parts: [String] = []
+        if let logURL, let text = try? String(contentsOf: logURL, encoding: .utf8) { parts.append(text) }
+        if !backendLogPath.isEmpty, let text = try? String(contentsOfFile: backendLogPath, encoding: .utf8) {
+            parts.append("--- Python 完整日志 ---\n" + text)
+        }
+        return parts.isEmpty ? logLines.joined(separator: "\n") : parts.joined(separator: "\n")
+    }
+
+    func copyCompleteLog() {
+        NSPasteboard.general.clearContents()
+        if !NSPasteboard.general.setString(completeLog, forType: .string) { notify("复制日志失败", isError: true) }
+    }
+
+    func openLogs() {
+        guard let logURL else { notify("日志尚不可用", isError: true); return }
+        if !NSWorkspace.shared.open(logURL.deletingLastPathComponent()) { notify("无法打开日志目录", isError: true) }
+    }
+
+    func saveDiagnostics() {
+        guard !busy, canOperate else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "NxLauncher-diagnostics.zip"
+        panel.message = "保存脱敏诊断包（不含密钥内容、游戏或存档）"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        var args = ["diagnostics", "--out", url.path]
+        if !sessionID.isEmpty { args += ["--session", sessionID] }
+        if let logURL { args += ["--launcher-log", logURL.path] }
+        let pipeline = self.pipeline
+        busy = true
+        statusText = "保存诊断包中"
+        lastErrorID = ""
+        errorHint = ""
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var failure: Error?
+            do {
+                try pipeline.run(args) { event in DispatchQueue.main.async { self?.handle(event) } }
+            } catch { failure = error }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.busy = false
+                if let failure { self.recordPipelineFailure(failure, operation: "保存诊断包") }
+                else { self.notify("脱敏诊断包已保存：\(url.path)") }
             }
         }
     }
@@ -500,7 +707,7 @@ final class LauncherState: ObservableObject {
                 library[index].icon = p.icon
                 library[index].version = p.version
                 library[index].titleID = p.baseTitleID
-                library[index].built = p.built
+                library[index].built = p.isBuilt(for: "mac")
             }
             migrateLegacyGameApp()
             if let app = findGameApp() { setGameApp(app) }
@@ -533,6 +740,26 @@ final class LauncherState: ObservableObject {
             appendLog(line)
         case .error(let msg):
             appendLog("✗ \(msg)")
+        case .diagnostic(let id, let message, let hint, let session):
+            lastErrorID = id
+            errorHint = hint
+            if !session.isEmpty { sessionID = session }
+            appendLog("✗ [\(id)] \(message)" + (hint.isEmpty ? "" : "\n建议：\(hint)"))
+            notice = id.isEmpty ? message : "\(message) [\(id)]"
+            noticeIsError = true
+        case .session(let id, let path):
+            sessionID = id
+            backendLogPath = path
+            appendLog("会话 \(id) · Python 日志：\(path)")
+        case .artifact(let target, let path, let game, _, _):
+            appendLog("已导出 \(target)：\(path)")
+            if ["mac", "mac-app"].contains(target),
+               game == plan?.baseTitleID || game == selectedGame?.titleID,
+               let app = existingApp(path) { setGameApp(app) }
+        case .warning(let message):
+            appendLog("警告：\(message)")
+            showToast(message, warning: true)
+
         }
     }
 
@@ -547,10 +774,22 @@ final class LauncherState: ObservableObject {
             appendLog("✗ \(error.localizedDescription)")
             notice = "\(operation)失败，详情见构建日志"
         }
+        if !lastErrorID.isEmpty { notice += " [\(lastErrorID)]" }
         noticeIsError = true
     }
 
     private func appendLog(_ line: String) {
+        if let logURL {
+            do {
+                let handle = try FileHandle(forWritingTo: logURL)
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                try handle.write(contentsOf: Data((line + "\n").utf8))
+            } catch {
+                notice = "完整日志写入失败：\(error.localizedDescription)"
+                noticeIsError = true
+            }
+        }
         logLines.append(line)
         if logLines.count > 500 { logLines.removeFirst(logLines.count - 500) }
     }
@@ -570,8 +809,8 @@ final class LauncherState: ObservableObject {
 
     // --- the runs ---
 
-    func startBuild() {
-        guard !busy, selectedGame != nil else { return }
+    func startBuild(rebuild: Bool = false, shadersOnly: Bool = false) {
+        guard !busy, canOperate, selectedGame != nil else { return }
         guard !checkingDependencies else {
             notify("正在检查编译环境，请稍候", isError: true)
             return
@@ -588,15 +827,20 @@ final class LauncherState: ObservableObject {
         // the values the background work needs are read here, on the main actor: the background
         // closure must not touch the state (it would be a data race)
         let dir = gameDir, keys = keysPath, pipeline = self.pipeline
+        var args = ["build", "--game-dir", dir, "--keys", keys, "--target", buildTarget.rawValue]
+        if rebuild { args.append("--rebuild") }
+        if shadersOnly { args.append("--rebuild-shaders") }
         let sourceID = selectedGameID
         planRequest &+= 1
         busy = true
+        lastErrorID = ""
+        errorHint = ""
         statusText = "编译中"
         notice = ""
         logLines.removeAll()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
-                try pipeline.run(["build", "--game-dir", dir, "--keys", keys]) { event in
+                try pipeline.run(args) { event in
                     Task { @MainActor in
                         guard let self, self.selectedGameID == sourceID, self.gameDir == dir else { return }
                         self.handle(event)
@@ -604,7 +848,7 @@ final class LauncherState: ObservableObject {
                 }
                 Task { @MainActor in
                     guard let self, self.selectedGameID == sourceID, self.gameDir == dir else { return }
-                    self.notify("编译完成")
+                    self.notify("编译完成（不会自动运行游戏）")
                     self.busy = false
                     self.refreshPlan()
                 }
@@ -619,8 +863,8 @@ final class LauncherState: ObservableObject {
     }
 
     func exportMacApp() {
-        guard !busy, selectedGame != nil else { return }
-        guard let plan, plan.built else { notify("还没有编译，先编译一次", isError: true); return }
+        guard !busy, canOperate, selectedGame != nil else { return }
+        guard let plan, plan.isBuilt(for: "mac") else { notify("还没有 Mac 编译结果，先编译一次", isError: true); return }
         // the export is written from the work folder, so it is a new copy every time: ask where
         // it should go instead of keeping a directory in the settings
         guard let dir = askWhereToExport("把 .app 导出到这个文件夹") else { return }
@@ -634,8 +878,8 @@ final class LauncherState: ObservableObject {
     }
 
     func exportUnsignedIPA() {
-        guard !busy, selectedGame != nil else { return }
-        guard let plan, plan.built else { statusText = "还没有编译，先编译一次"; return }
+        guard !busy, canOperate, selectedGame != nil else { return }
+        guard let plan, plan.isBuilt(for: "ios") else { notify("还没有 iOS 编译结果，请切换到 iOS 目标编译", isError: true); return }
         guard let dir = askWhereToExport("把 IPA 导出到这个文件夹") else { return }
         let out = URL(fileURLWithPath: dir).appendingPathComponent("\(plan.name).ipa").path
         runExport(target: "ios-ipa-unsigned", out: out,
@@ -658,15 +902,17 @@ final class LauncherState: ObservableObject {
     }
 
     private func runExport(target: String, out: String, extra: [String]) {
-        guard !busy, let sourceID = selectedGameID, selectedGame != nil else { return }
+        guard !busy, canOperate, let sourceID = selectedGameID, selectedGame != nil else { return }
         let sourceFolder = gameDir
         let pipeline = self.pipeline
         planRequest &+= 1
         busy = true
         statusText = "导出中"
+        lastErrorID = ""
+        errorHint = ""
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
-                try pipeline.run(["export", "--target", target, "--out", out] + extra) { event in
+                try pipeline.run(["export", "--target", target, "--out", out, "--require-manifest"] + extra) { event in
                     Task { @MainActor in
                         guard let self, self.selectedGameID == sourceID, self.gameDir == sourceFolder else { return }
                         self.handle(event)
@@ -704,8 +950,8 @@ final class LauncherState: ObservableObject {
     /// written into that app's own support folder (the app's name is the folder's name), so the
     /// game really reads them.
     func launchGame() {
-        guard !busy, selectedGame != nil else { return }
-        guard let plan, plan.built else { notifyError("还没有编译，先编译一次"); return }
+        guard !busy, canOperate, selectedGame != nil else { return }
+        guard let plan, plan.isBuilt(for: "mac") else { notifyError("还没有 Mac 编译结果，先编译一次"); return }
         guard let app = findGameApp() else {
             notifyError("找不到已导出的 .app。导出目录：\(exportDir)；游戏文件夹：\(gameDir)。先点「导出 .app」，或把「导出目录」指到 .app 所在的文件夹。")
             return
@@ -713,8 +959,8 @@ final class LauncherState: ObservableObject {
         setGameApp(app)
         migrateLegacySupportFolder()
         if appliedSettings?.supportPath != supportDir.path { loadEnv() }
-        writeEnv()
-        NSWorkspace.shared.open(app)
+        guard writeEnv() else { return }
+        guard NSWorkspace.shared.open(app) else { notifyError("macOS 无法打开已导出的应用"); return }
         notify("已启动 \(app.lastPathComponent)")
     }
 
@@ -783,7 +1029,7 @@ final class LauncherState: ObservableObject {
             return
         }
         state.setGameApp(app)
-        state.writeEnv()
+        guard state.writeEnv() else { print("settings write failed; not opening app"); return }
         print("app: \(app.path)")
         print("support: \(state.supportDir.path)")
         print("env: \(state.supportDir.appendingPathComponent("env.txt").path)")
@@ -822,7 +1068,7 @@ final class LauncherState: ObservableObject {
     /// .app-name folder, and this follows them until the game is exported again.
     var supportDir: URL {
         let id = selectedGame?.titleID ?? plan?.baseTitleID ?? ""
-        if !id.isEmpty, usesFixedSupportHome {
+        if Self.validTitleID(id), usesFixedSupportHome {
             return supportRoot.appendingPathComponent("nxnative", isDirectory: true)
                 .appendingPathComponent(id, isDirectory: true)
         }
@@ -833,7 +1079,7 @@ final class LauncherState: ObservableObject {
     /// carries the folder's name as a baked format string, so the bundle itself says which scheme
     /// it reads — no version file needed.
     private var usesFixedSupportHome: Bool {
-        guard let game = selectedGame, !game.titleID.isEmpty, !game.appPath.isEmpty else { return false }
+        guard let game = selectedGame, Self.validTitleID(game.titleID), !game.appPath.isEmpty else { return false }
         let macOS = URL(fileURLWithPath: game.appPath, isDirectory: true).appendingPathComponent("Contents/MacOS")
         let marker = Data("Application Support/nxnative/\(game.titleID)".utf8)
         let files = (try? FileManager.default.contentsOfDirectory(at: macOS, includingPropertiesForKeys: [.isRegularFileKey]))?
@@ -845,7 +1091,7 @@ final class LauncherState: ObservableObject {
     /// game over without its saves. Move that folder into the fixed per-game home once, on the first
     /// run of an export that reads the new home and knows the old name.
     func migrateLegacySupportFolder() {
-        guard let game = selectedGame, !game.titleID.isEmpty, appSupportName != "nxnative",
+        guard let game = selectedGame, Self.validTitleID(game.titleID), appSupportName != "nxnative",
               usesFixedSupportHome else { return }
         let fm = FileManager.default
         let home = supportRoot.appendingPathComponent("nxnative", isDirectory: true)
@@ -854,7 +1100,7 @@ final class LauncherState: ObservableObject {
         let legacy = supportRoot.appendingPathComponent(appSupportName, isDirectory: true)
         guard legacy.path != home.path, fm.fileExists(atPath: legacy.path) else { return }
         do {
-            try migrateFolder(from: legacy, to: home)
+            try Self.migrateFolder(from: legacy, to: home)
             appendLog("已迁移存档与设置：\(appSupportName) → nxnative/\(game.titleID)")
         } catch {
             appendLog("✗ 迁移旧存档目录失败：\(error.localizedDescription)（旧目录保留，下次启动再试）")
@@ -864,22 +1110,30 @@ final class LauncherState: ObservableObject {
     /// Move `from` into `to`, file by file, never overwriting what is already there (a name present
     /// on both sides stays the new one; directories merge). The source folder remains when
     /// something was kept on both sides.
-    private func migrateFolder(from: URL, to: URL) throws {
+    nonisolated static func migrateFolder(from: URL, to: URL) throws {
         let fm = FileManager.default
-        try fm.createDirectory(at: to, withIntermediateDirectories: true)
+        let sourceValues = try from.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard sourceValues.isDirectory == true, sourceValues.isSymbolicLink != true else { return }
+        if fm.fileExists(atPath: to.path) {
+            let values = try to.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard values.isDirectory == true, values.isSymbolicLink != true else { return }
+        } else { try fm.createDirectory(at: to, withIntermediateDirectories: true) }
         for item in try fm.contentsOfDirectory(atPath: from.path) {
             let source = from.appendingPathComponent(item)
             let target = to.appendingPathComponent(item)
-            if fm.fileExists(atPath: target.path) {
-                var isDirectory: ObjCBool = false
-                if fm.fileExists(atPath: source.path, isDirectory: &isDirectory), isDirectory.boolValue {
+            // lstat-style resource checks also recognize broken symbolic links as conflicts.
+            if (try? target.resourceValues(forKeys: [.isSymbolicLinkKey])) != nil {
+                let sourceKind = try source.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                let targetKind = try target.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                if sourceKind.isDirectory == true, targetKind.isDirectory == true,
+                   sourceKind.isSymbolicLink != true, targetKind.isSymbolicLink != true {
                     try migrateFolder(from: source, to: target)
                 }
-                continue
+                continue // preserve BOTH conflicting files / types
             }
             try fm.moveItem(at: source, to: target)
         }
-        try? fm.removeItem(at: from)
+        if try fm.contentsOfDirectory(atPath: from.path).isEmpty { try fm.removeItem(at: from) }
     }
 
     /// The name of the legacy support folder: the name of the .app that is started (exports before

@@ -21,10 +21,19 @@ struct GameLibraryView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Image(systemName: "square.stack.3d.up.fill")
-                    .font(.system(size: 24)).foregroundStyle(DS.accent)
+                Group {
+                    if let image = NSImage(contentsOf: LauncherState.bundleResources().appendingPathComponent("AppIcon.png")) {
+                        Image(nsImage: image).resizable().scaledToFit()
+                    } else { Image(systemName: "square.stack.3d.up.fill").font(.system(size: 24)).foregroundStyle(DS.accent) }
+                }.frame(width: 32, height: 32)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("NxLauncher").font(.system(size: 22, weight: .semibold, design: .rounded))
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Text(LauncherIdentity.name)
+                            .font(.system(size: 22, weight: .semibold, design: .rounded))
+                        Text("v\(LauncherIdentity.version)")
+                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                            .foregroundStyle(.secondary)
+                    }
                     Text("游戏库").font(.system(size: 12)).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -37,6 +46,15 @@ struct GameLibraryView: View {
             }
             .padding(.horizontal, 26).padding(.vertical, 20)
             Divider()
+            if state.preparing || !state.preparationError.isEmpty {
+                HStack(spacing: 10) {
+                    if state.preparing { ProgressView().controlSize(.small) }
+                    Text(state.preparing ? state.statusText : "工具准备失败：\(state.preparationError)")
+                        .font(.system(size: 12)).foregroundStyle(state.preparationError.isEmpty ? DS.warn : DS.bad)
+                    Spacer()
+                    if !state.preparing { Button("重试准备") { state.retryPreparation() }.buttonStyle(QuietButtonStyle()) }
+                }.padding(.horizontal, 26).padding(.vertical, 10)
+            }
             GeometryReader { geometry in
                 HStack(alignment: .top, spacing: 24) {
                     library(showOpenButton: geometry.size.width < 960)
@@ -141,6 +159,7 @@ struct GameLibraryView: View {
         .contextMenu {
             Button("打开工作区") { state.selectGame(game); openWorkspace() }
             Button("在 Finder 中显示") { state.revealGameFolder(game) }
+            Button("打开存档目录") { state.openSaveDirectory(game) }.disabled(state.saveDirectory(for: game) == nil)
             Divider()
             Button("从游戏库移除…", role: .destructive) { removal = game }
         }
@@ -185,15 +204,23 @@ struct GameLibraryView: View {
                     .textSelection(.enabled).lineLimit(3).truncationMode(.middle)
                 Button(action: openWorkspace) { Label("打开工作区", systemImage: "arrow.right") }
                     .buttonStyle(PrimaryButtonStyle(enabled: !state.busy)).disabled(state.busy)
-                if game.built {
-                    Button { state.launchGame() } label: { Label("开始游戏", systemImage: "play.fill") }
-                        .buttonStyle(SecondaryButtonStyle()).disabled(state.busy)
+                HStack(spacing: 8) {
+                    if game.built {
+                        Button { state.launchGame() } label: { Label("开始游戏", systemImage: "play.fill") }
+                            .buttonStyle(SecondaryButtonStyle()).disabled(state.busy || !state.canOperate)
+                    }
+                    Button { state.revealGameFolder(game) } label: { Label("Finder", systemImage: "folder") }
+                        .buttonStyle(QuietButtonStyle()).help("在 Finder 中显示游戏文件夹")
                 }
-                Button { state.revealGameFolder(game) } label: { Label("在 Finder 中显示", systemImage: "folder") }
-                    .buttonStyle(QuietButtonStyle())
                 Divider()
-                Button("从游戏库移除…", role: .destructive) { removal = game }
-                    .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(DS.bad).disabled(state.busy)
+                HStack(spacing: 8) {
+                    Button("移除记录…", role: .destructive) { removal = game }
+                        .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(DS.bad).disabled(state.busy)
+                    Spacer(minLength: 0)
+                    Button { state.openSaveDirectory(game) } label: { Label("打开存档目录", systemImage: "folder.badge.gearshape") }
+                        .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(DS.accent)
+                        .disabled(state.saveDirectory(for: game) == nil)
+                }
             }
         }
     }

@@ -166,6 +166,50 @@ class IPAExportTests(unittest.TestCase):
         (self.romfs / 'Data/marker.bin').unlink()
         self.assert_failure(self.run_export(), 'missing RomFS marker')
 
+    def test_shared_header_exports_without_per_game_header(self):
+        shared = self.repo / 'dm/gfx/nvn/dmsh_chain.h'
+        shared.parent.mkdir(parents=True)
+        shared.write_text('#define DMSH_CHAIN "selected-chain"\n')
+        (self.profile / 'dmsh_chain.h').unlink()
+        tool = self.repo / 'dm/gfx/tools/dmsh_chain.py'
+        tool.parent.mkdir(parents=True)
+        shutil.copyfile(UPSTREAM / 'dm/gfx/tools/dmsh_chain.py', tool)
+        digest = subprocess.check_output([sys.executable, str(tool), '--inputs'],
+                                         env=dict(self.env, DM_GAME=str(self.profile)), text=True).strip()
+        self.put(self.msl / 'inputs.tsv', f'game\t{GAME}\ninputs\t{digest}\n'.encode())
+        for name in ('c1_full.tsv', 'cb_extent.tsv'):
+            (self.profile / name).write_text(f'# chain b-selected-chain inputs {digest} fixture\n')
+        self.assert_success(self.run_export())
+        with zipfile.ZipFile(self.out) as archive:
+            self.assertIn(PREFIX + 'msl/b-selected-chain/selected_b.metallib', archive.namelist())
+
+    def test_portable_profile_repairs_tables_from_mac_cache_but_packages_ios(self):
+        shared = self.repo / 'dm/gfx/nvn/dmsh_chain.h'
+        shared.parent.mkdir(parents=True)
+        shared.write_text('#define DMSH_CHAIN "selected-chain"\n')
+        (self.profile / 'dmsh_chain.h').unlink()
+        for name in ('dmsh_chain.py', 'c1_guard.py', 'cb_extent.py'):
+            tool = self.repo / 'dm/gfx/tools' / name
+            tool.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(UPSTREAM / 'dm/gfx/tools' / name, tool)
+        digest = subprocess.check_output(
+            [sys.executable, str(self.repo / 'dm/gfx/tools/dmsh_chain.py'), '--inputs'],
+            env=dict(self.env, DM_GAME=str(self.profile)), text=True).strip()
+        cache = self.work / 'shader/cache/b-selected-chain'
+        stamp = f'game\t{GAME}\ninputs\t{digest}\n'.encode()
+        self.put(self.msl / 'inputs.tsv', stamp)
+        self.put(cache / 'inputs.tsv', stamp)
+        self.put(cache / 'mac_b.metal', b'auto value = (*spvDescriptorSet0.vp_c1)._m0[unknown];\n')
+        self.put(cache / 'mac_b.json', json.dumps({'chain': 'selected-chain', 'bindings': []}).encode())
+        self.assert_success(self.run_export())
+        self.assertIn('\nmac\n', (self.profile / 'c1_full.tsv').read_text())
+        self.assertTrue((self.profile / 'cb_extent.tsv').read_text().startswith(
+            f'# chain b-selected-chain inputs {digest} '))
+        with zipfile.ZipFile(self.out) as archive:
+            self.assertEqual(archive.read(PREFIX + 'msl/b-selected-chain/selected_b.metallib'),
+                             b'ios shader fixture')
+            self.assertFalse(any('mac_b' in n for n in archive.namelist()))
+
     def test_missing_ios_shaders_does_not_fall_back_to_mac_cache(self):
         shutil.rmtree(self.msl)
         self.assert_failure(self.run_export(), 'missing iOS shader libraries')
@@ -177,6 +221,39 @@ class IPAExportTests(unittest.TestCase):
         with zipfile.ZipFile(self.out) as archive:
             self.assertEqual(archive.read(PREFIX + 'msl/vk/vk_shaders.metallib'), b'vulkan library')
             self.assertFalse(any('b-selected-chain' in n for n in archive.namelist()))
+
+    def test_romfs_image_mapping_and_marker(self):
+        import struct
+        shutil.rmtree(self.romfs)
+        tool = self.repo / 'dm/tools/romfs.py'
+        tool.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(UPSTREAM / 'dm/tools/romfs.py', tool)
+        payload = b'image fixture'
+        names = b'Datamarker.bin'
+        ent = struct.Struct('<QQIHBB')
+        index = (ent.pack(1, 1, 0, 0, 0, 0) + ent.pack(2, 1, 0, 4, 0, 0)
+                 + ent.pack(32, len(payload), 4, 10, 1, 0) + names)
+        image = self.romfs.with_name('RomFS.img')
+        image.write_bytes(struct.pack('<8sQQQ', b'DMROMFS1', 32 + len(payload), len(index), 3) + payload + index)
+        self.assert_success(self.run_export())
+        with zipfile.ZipFile(self.out) as archive:
+            self.assertEqual(archive.read(PREFIX + 'romfs.img'), image.read_bytes())
+            self.assertFalse(any(n.startswith(PREFIX + 'romfs/') for n in archive.namelist()))
+
+    def test_gl_shader_mapping_without_nvn_header(self):
+        shutil.rmtree(self.msl)
+        (self.profile / 'dmsh_chain.h').unlink()
+        self.put(self.work / 'shader/ios/gl/gl_shaders.metallib', b'GL library')
+        self.assert_success(self.run_export())
+        with zipfile.ZipFile(self.out) as archive:
+            self.assertEqual(archive.read(PREFIX + 'msl/gl/gl_shaders.metallib'), b'GL library')
+            self.assertFalse(any('b-selected-chain' in n for n in archive.namelist()))
+
+    def test_wrong_platform_gl_cache_is_rejected(self):
+        shutil.rmtree(self.msl)
+        self.put(self.work / 'shader/gl/gl_shaders.metallib', b'Mac GL library')
+        self.env['GFXAPI'] = 'gl'
+        self.assert_failure(self.run_export(), 'missing ios gl shader library')
 
     def test_optional_aoc_absent_omits_stale_bundled_aoc(self):
         shutil.rmtree(self.aoc)

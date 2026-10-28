@@ -25,11 +25,11 @@ struct GameLibraryTests {
         // the launcher's baked support-home marker (the build writes it into the executable), which
         // tells the launcher this export reads the fixed per-game folder
         let exeA = try directory("exports/RenamedA.app/Contents/MacOS")
-        try Data("format %s/Library/Application Support/nxnative/GameA\0".utf8)
+        try Data("format %s/Library/Application Support/nxnative/010000000000000A\0".utf8)
             .write(to: exeA.appendingPathComponent("RenamedA"), options: .atomic)
         _ = try directory("exports/Unrelated.app")
         let envA = try directory("support/RenamedA").appendingPathComponent("env.txt")
-        let envHomeFile = support.appendingPathComponent("nxnative").appendingPathComponent("GameA").appendingPathComponent("env.txt")
+        let envHomeFile = support.appendingPathComponent("nxnative").appendingPathComponent("010000000000000A").appendingPathComponent("env.txt")
         let originalEnv = "# fixture\nDM_FPS_TARGET=30\nDM_LANG=en-US\nDM_OPMODE=1\nDM_PADMAP=custom\n"
         try originalEnv.write(to: envA, atomically: true, encoding: .utf8)
         let script = """
@@ -38,7 +38,7 @@ struct GameLibraryTests {
         folder=sys.argv[sys.argv.index('--game-dir')+1]
         name=os.path.basename(folder)
         p=dict(ev='plan',ok=True,game_dir=folder,repo='',repo_ok=False,keys='',keys_ok=False,
-          base=None,base_title_id=name,updates=[],dlc=[],all_files=[],has_port=False,
+          base=None,base_title_id={"GameA":"010000000000000A","GameB":"010000000000000B"}.get(name,"010000000000000C"),updates=[],dlc=[],all_files=[],has_port=False,
           name=name,version='1.2',work_dir=folder+'/work',built=False,icon='',fps_target='',notes=[])
         print(json.dumps(p),flush=True)
         """

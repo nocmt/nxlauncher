@@ -1,0 +1,199 @@
+From: NxLauncher maintainers
+Subject: [PATCH] Static pipeline guest-execution guard and shared Mac font policy
+
+Based on official main 201dfd1280684e9d3ceac8b644236fdac11b6cc2.
+
+diff --git a/dm/gfx/tools/shader_split.py b/dm/gfx/tools/shader_split.py
+index 2b1dc07ab24131644dde0a973e20812290915ddb..8fbc764805885828b08be36b250706f6bc6bd9ee 100644
+--- a/dm/gfx/tools/shader_split.py
++++ b/dm/gfx/tools/shader_split.py
+@@ -1521,6 +1521,8 @@ def oodle(comp, n):
+     """The game's own decoder: OodleLZ_Decompress (Trinity's packs are Oodle Mermaid, and Oodle is linked into main), or LZ5_decompress_safe (DRAGON QUEST XI S's legacy Unreal paks):
+     one Mac host per worker process in its tool mode (dm/host/hle_oodle.c, DM_OODLE_SERVE), fed over a pipe. DM_OODLE_HOST = the host, DM_OODLE_MODULES = the rewritten modules it loads
+     (the NSP script sets both for a game with Trinity packs or legacy Unreal paks, profile_guess.py shader_sources)"""
++    if os.environ.get('NX_NO_RUNTIME_CAPTURE') == '1':
++        raise RuntimeError('NX_RUNTIME_CAPTURE_REQUIRED: guest Oodle/LZ5 decoding needs explicit user authorization')
+     global _OODLE
+     if _OODLE is None:
+         import tempfile
+diff --git a/dm/gfx/tools/uepak.py b/dm/gfx/tools/uepak.py
+index 97ad9364b18076e93e7f75235b1e5754d261dbd6..ab21e72c027d303c7b3fad3125205fd3cc6bcfa0 100644
+--- a/dm/gfx/tools/uepak.py
++++ b/dm/gfx/tools/uepak.py
+@@ -120,6 +120,8 @@ class OodleHost:
+     """The game's own OodleLZ_Decompress in the Mac host's tool mode (DM_OODLE_SERVE, dm/host/hle_oodle.c: served before the SDK starts, so no boot), called as decode(compressed, raw length).
+     host = the Mac host built for the game, modules = its rewritten modules, env = the host's environment (default: this process's)"""
+     def __init__(self, host, modules, env=None):
++        if (env or os.environ).get('NX_NO_RUNTIME_CAPTURE') == '1':
++            raise RuntimeError('NX_RUNTIME_CAPTURE_REQUIRED: guest Oodle decoding needs explicit user authorization')
+         import subprocess, tempfile
+         self.err = tempfile.TemporaryFile()
+         self.p = subprocess.Popen([str(host), str(modules)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.err, env=dict(env or os.environ, DM_OODLE_SERVE='1'))
+diff --git a/dm/host/main.c b/dm/host/main.c
+index 9986b49550b2f17e72c7d6e660fd049b3ccb8a7a..f567ef94988ee07ece0637d4342de681aaa7c986 100644
+--- a/dm/host/main.c
++++ b/dm/host/main.c
+@@ -60,6 +60,8 @@ static pthread_key_t g_race_keys[512];
+ static unsigned g_race_n, g_race_want;
+ static void *keyrace_thread(void *unused);
+ static void host_preload(int argc, char **argv) {
++    const char *no_run = getenv("NX_NO_RUNTIME_CAPTURE");
++    if (no_run && !strcmp(no_run, "1")) die("NX_RUNTIME_CAPTURE_REQUIRED: guest execution needs explicit user authorization");
+     g_t0_ns = proc_start_mono_ns();
+     flags_init();
+     if (argc < 2) die("usage: dmhost <dir> [mod...] [-- game arguments...]");
+diff --git a/dm/tools/tests/test_no_runtime_capture.py b/dm/tools/tests/test_no_runtime_capture.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..2ffeed08d721f9d3c2a029cbc3bddc2d65633dcb
+--- /dev/null
++++ b/dm/tools/tests/test_no_runtime_capture.py
+@@ -0,0 +1,69 @@
++"""Static build boundaries must reject before any guest process or file mutation."""
++import ast
++import importlib.util
++import os
++from pathlib import Path
++import unittest
++from unittest import mock
++
++REPO = Path(__file__).resolve().parents[3]
++spec = importlib.util.spec_from_file_location('nsp_no_runtime', REPO / 'scripts/build_ipa_from_nsp.py')
++nsp = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(nsp)
++
++
++class NoRuntimeTests(unittest.TestCase):
++    def test_cli_and_default(self):
++        self.assertFalse(nsp.parse_args([]).no_runtime_capture)
++        self.assertTrue(nsp.parse_args(['--no-runtime-capture']).no_runtime_capture)
++
++    def test_boot_boundary_precedes_files_and_processes(self):
++        with mock.patch.object(nsp.subprocess, 'Popen') as popen, mock.patch('builtins.open') as opened:
++            with self.assertRaisesRegex(nsp.BuildError, 'NX_RUNTIME_CAPTURE_REQUIRED'):
++                nsp.boot_mac('unused', 'unused', {'NX_NO_RUNTIME_CAPTURE': '1'}, Path('unused'), Path('unused'), 1)
++            popen.assert_not_called()
++            opened.assert_not_called()
++
++    def test_guard_allows_static_work(self):
++        self.assertIsNone(nsp.require_runtime_capture({}, 'static'))
++
++    def test_oodle_host_rejects_before_process(self):
++        spec = importlib.util.spec_from_file_location('no_runtime_uepak', REPO / 'dm/gfx/tools/uepak.py')
++        ue = importlib.util.module_from_spec(spec)
++        spec.loader.exec_module(ue)
++        with mock.patch('subprocess.Popen') as popen:
++            with self.assertRaisesRegex(RuntimeError, 'NX_RUNTIME_CAPTURE_REQUIRED'):
++                ue.OodleHost('unused', 'unused', {'NX_NO_RUNTIME_CAPTURE': '1'})
++            popen.assert_not_called()
++
++    def test_split_decoder_guard_precedes_every_worker_process(self):
++        # Compile the actual production function without importing unrelated optional readers.
++        source = ast.parse((REPO / 'dm/gfx/tools/shader_split.py').read_text())
++        function = next(n for n in source.body if isinstance(n, ast.FunctionDef) and n.name == 'oodle')
++        namespace = {'os': os, '_OODLE': None}
++        exec(compile(ast.Module(body=[function], type_ignores=[]), '<production oodle>', 'exec'), namespace)
++        with mock.patch.dict(os.environ, {'NX_NO_RUNTIME_CAPTURE': '1'}), mock.patch('subprocess.Popen') as popen:
++            with self.assertRaisesRegex(RuntimeError, 'NX_RUNTIME_CAPTURE_REQUIRED'):
++                namespace['oodle'](b'', 0)
++            popen.assert_not_called()
++
++    def test_guest_host_backstop_precedes_loading(self):
++        text = (REPO / 'dm/host/main.c').read_text()
++        body = text[text.index('static void host_preload('):]
++        self.assertLess(body.index('NX_RUNTIME_CAPTURE_REQUIRED'), body.index('load_modules('))
++        # Offline pipeline compilation is not guest execution and remains permitted.
++        body = text[text.index('int main('):]
++        self.assertLess(body.index('mtl_pso_prebuild_tool()'), body.index('host_preload('))
++
++    def test_no_unreviewed_host_process_boundaries(self):
++        tree = ast.parse((REPO / 'scripts/build_ipa_from_nsp.py').read_text())
++        launches = []
++        for fn in (n for n in tree.body if isinstance(n, ast.FunctionDef)):
++            for node in ast.walk(fn):
++                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == 'Popen':
++                    launches.append(fn.name)
++        self.assertEqual(sorted(launches), ['boot_mac', 'rewrite', 'run'])
++
++
++if __name__ == '__main__':
++    unittest.main()
+diff --git a/scripts/build_ipa_from_nsp.py b/scripts/build_ipa_from_nsp.py
+index eb8fd8ac5b02296968246e4ac8b22a102434c7d0..eec82882d0062e8263541727fc825fa09e51deae 100755
+--- a/scripts/build_ipa_from_nsp.py
++++ b/scripts/build_ipa_from_nsp.py
+@@ -1079,9 +1079,15 @@ def build_mac_host(repo, out, env, logs, g):
+     return out
+ 
+ 
++def require_runtime_capture(env, reason):
++    if (env or os.environ).get('NX_NO_RUNTIME_CAPTURE') == '1':
++        raise BuildError('NX_RUNTIME_CAPTURE_REQUIRED: ' + reason + '; static build needs cached runtime data. The user must explicitly authorize running guest code before retrying without --no-runtime-capture.')
++
++
+ def boot_mac(host, patched, henv, rd, log, secs, done=lambda: False):
+     """Boot the game in the Mac host (headless and silent: no DM_WINDOW, no DM_AUDIO) with its output in log, until done() says so, the host exits, or secs pass;
+     then SIGTERM (the host's graceful exit), a kill 5 s later. Returns the host's exit code, None when it was still running"""
++    require_runtime_capture(henv, 'Mac guest boot / heap or address-region check / shader capture')
+     t0 = time.time()
+     with open(log, 'w') as f:
+         p = subprocess.Popen([str(host), str(patched)], env=henv, cwd=rd, stdout=f, stderr=subprocess.STDOUT)
+@@ -1168,6 +1174,7 @@ def decode_ue_shaders(repo, dirs, pkg_ver, patched, work, env, logs, g):
+             if not host:
+                 PROG.set(step='building the Mac host')
+                 host = build_mac_host(repo, work / 'tools/dmhost', env, logs, g)
++            require_runtime_capture(env, 'IoStore decoding with the game decoder')
+             dec = uepak.OodleHost(host, patched, env)
+         PROG.set(step=f'{v}: shader archives out of the paks' + (' and IoStore containers' if dec else ''))
+         try: listing, n = uepak.job(str(rfs.source(d)), str(d / 'ExeFS/main'), str(jd), decode=dec)
+@@ -1551,6 +1558,7 @@ def split_shaders(py, repo, roms, mains, pkg, env, logs, g, provisional=False, o
+     have_pairs = g.table('pso_pairs.tsv').is_file() or pkg.with_name('pso_pairs.tsv').is_file()
+     if key and pkg.is_dir() and have_pairs and (note := reused(kf, key)) is not None:
+         PROG.end(f'{note}, reused (inputs unchanged)'); return package_key(pkg)
++    if oodle: require_runtime_capture(env, 'Oodle/LZ5 shader split requires guest decoder execution')
+     PROG.set(step='splitting')
+     tmp = pkg.with_name(pkg.name + '.partial'); rmtree(tmp); (tmp / 'tables').mkdir(parents=True)
+     def counted(ln):   # shader_split.py's 'progress: <done>/<total>'
+@@ -1856,13 +1864,20 @@ def mac_host(py, repo, work, env, logs, g):
+     (make_ext_font.py, into <id>_build/font, made again when the tool changed). Returns (host, font folder)"""
+     PROG.stage('Mac host', step='building')
+     host = build_mac_host(repo, work / 'tools/dmhost', env, logs, g)
+-    PROG.set(step='button-icon font')
+-    font = work / 'font'; ttf, kf = font / 'nintendo_ext.ttf', font / 'nintendo_ext.key'
+-    key = fingerprint(('files', [repo / 'dm/tools/make_ext_font.py']))
+-    if not (ttf.is_file() and reused(kf, key) is not None):
+-        rmtree(kf); font.mkdir(parents=True, exist_ok=True)
+-        run([py, repo / 'dm/tools/make_ext_font.py', ttf], logs / 'make_ext_font.log', env=env)
+-        kf.write_text(f'{key}\n')
++    PROG.set(step='redistributable fonts')
++    font = work / 'font'
++    helper = Path(env.get('NXLAUNCHER_FONT_HELPER') or repo.parent / 'Scripts/font-policy.py')
++    if not helper.is_absolute() or not helper.is_file():
++        raise BuildError('set NXLAUNCHER_FONT_HELPER to the absolute path of Scripts/font-policy.py')
++    result = logs / 'font-policy.json'
++    run([py, helper, '--repo', repo, '--out', font], result, env=env)
++    try:
++        policy = json.loads(result.read_text())
++        valid = policy.get('redistributable') is True and all(
++            Path(policy[k]).resolve() == (font / n).resolve() and (font / n).is_file()
++            for k, n in (('standard', 'standard.ttf'), ('extension', 'nintendo_ext.ttf')))
++    except (OSError, ValueError, KeyError, TypeError): valid = False
++    if not valid: raise BuildError('invalid redistributable font policy result')
+     PROG.end(str(host))
+     return host, font
+ 
+@@ -2011,6 +2026,7 @@ def parse_args(argv):
+                     '(dm/gfx/tools/dmsh_chain.lock, Xcode 27.1) instead of stopping; such shaders can render wrong pictures')
+     ap.add_argument('--profile-out', help='where the provisional profile goes (default: <NSP folder>/<title ID>_build/profile)')
+     ap.add_argument('--provisional', action='store_true', help='build from a provisional profile even when dm/games has one for the game (tests the guesses)')
++    ap.add_argument('--no-runtime-capture', action='store_true', help='static build only: prohibit guest boots, heap/region probes, shader captures and game decoder execution; reuse complete cached runtime data or report NX_RUNTIME_CAPTURE_REQUIRED')
+     ap.add_argument('--no-heap-check', action='store_true', help='a provisional profile: skip the heap check and the address region check on the Mac (the alias / heap split stays a guess); a derived profile: skip the address region check')
+     ap.add_argument('--progress', choices=('auto', 'bar', 'lines', 'json', 'off'), help='stage lines on the console: bar = one line per stage, redrawn in place; lines = a plain line every BEAT seconds; json = newline-delimited JSON events (no prompts); off = only each stage\'s start and end '
+                     '(default: the PROGRESS setting; auto = bar in a terminal or Spyder, lines when the output goes to a file or a pipe)')
+@@ -2107,6 +2123,7 @@ def main(args=None):
+     want_lang = language_code(lang_in) if lang_in else 'en-US'
+     if not want_lang: raise BuildError(f'unknown game language {lang_in!r}; give one of {language_list([c for c, _ in nacp.LANGUAGES])}, by code or by name')
+     env = dict(os.environ, PATH=os.pathsep.join(TOOL_PATHS + [os.environ.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin')]))
++    if args.no_runtime_capture: env['NX_NO_RUNTIME_CAPTURE'] = '1'
+     env.setdefault('USER', getpass.getuser())   # xcodegen fails without USER (Couldn't find current username)
+     configure_dotnet(env)
+     env.setdefault('J', str(os.cpu_count() or 8))   # shader_split.py's and dmsh_build.py's workers (their default is 8)

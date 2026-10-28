@@ -265,7 +265,41 @@ def checkout_tree(repo, baseline, target, algorithm, git, unchanged):
             shutil.rmtree(work)
 
 
-def prepare(repo, patch_dir, check=False):
+def export_tree(destination, target_oid, target, algorithm, git):
+    """Export only verified Git blobs, never ignored build products or user data.
+
+    The temporary index's tree is the snapshot we verified, so a concurrent
+    worktree edit cannot race a later recursive copy into the release archive.
+    The destination must not exist; publish it only after checking exported bytes.
+    """
+    destination = Path(destination).absolute()
+    if os.path.lexists(destination):
+        raise PatchError(f'export destination already exists: {destination}')
+    with tempfile.TemporaryDirectory(prefix='.nxlauncher-export-', dir=destination.parent) as tmp:
+        tmp = Path(tmp)
+        archive, source = tmp / 'source.tar', tmp / 'source'
+        source.mkdir()
+        git('archive', '--format=tar', f'--output={archive}', target_oid)
+        result = subprocess.run(['tar', '-xf', str(archive), '-C', str(source)],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if result.returncode:
+            raise PatchError(f'cannot extract verified source: {os.fsdecode(result.stderr).strip()}')
+        # Git export-ignore/export-subst attributes must not silently omit or
+        # rewrite source files that were verified in the worktree.
+        if not matches_tree(source, target, {}, algorithm):
+            raise PatchError('exported source differs from the verified patch tree')
+        for name in ARCHIVE_PRUNED:
+            path = source / name
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            elif os.path.lexists(path):
+                path.unlink()
+        source.rename(destination)
+
+
+def prepare(repo, patch_dir, check=False, export_dir=None):
+    if export_dir is not None and not check:
+        raise PatchError('source export requires --check; it never applies patches')
     repo, patch_dir = Path(repo).resolve(), Path(patch_dir).resolve()
     # Do not let inherited Git repository/index routing redirect any operation.
     env = dict(os.environ)
@@ -347,7 +381,10 @@ def prepare(repo, patch_dir, check=False):
             target = entries(git('ls-tree', '-rz', target_oid).stdout)
             unchanged()
             if matches_tree(repo, target, baseline, algorithm):
-                print(f'nxnative {head[:12]}: all {len(patches)} patches verified')
+                if export_dir is not None:
+                    export_tree(export_dir, target_oid, target, algorithm, git)
+                    unchanged()
+                print(f'nxnative {head[:12]}: all {len(patches)} patches verified; tree {target_oid}')
                 return
             if not matches_tree(repo, baseline, {}, algorithm):
                 raise PatchError('nxnative differs from both the pinned upstream and the complete patch series; '
@@ -365,9 +402,11 @@ def main():
     parser.add_argument('--check', action='store_true', help='verify without changing the dependency')
     parser.add_argument('--repo', type=Path, default=root / 'nxnative')
     parser.add_argument('--patch-dir', type=Path, default=root / 'patches')
+    parser.add_argument('--export', type=Path, dest='export_dir',
+                        help='with --check, export verified source to a new directory (no build products)')
     args = parser.parse_args()
     try:
-        prepare(args.repo, args.patch_dir, args.check)
+        prepare(args.repo, args.patch_dir, args.check, args.export_dir)
     except (PatchError, OSError) as error:
         print(f'FAIL: {error}', file=sys.stderr)
         return 1

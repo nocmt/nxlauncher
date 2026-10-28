@@ -129,14 +129,28 @@ class PackPipelineTests(unittest.TestCase):
             popen_calls.append((command, kwargs, dict(os.environ)))
             return process
 
-        def fake_doctor(doctor_repo, python, env):
+        def fake_doctor(doctor_repo, python, env, **kwargs):
             self.assertEqual(doctor_repo, repo.resolve())
             self.assertEqual(env['PATH'], repaired['PATH'])
             self.assertEqual(env['DOTNET_ROOT_ARM64'], repaired['DOTNET_ROOT_ARM64'])
             return report
 
+        title = '0100123456789000'
+        (game_dir / f'Fixture [{title}].nsp').touch()
+        profile = repo / 'dm/games' / title
+        profile.mkdir()
+        (profile / 'game.tsv').write_text(f'name\tFixture\npackage\tv1\ntitle_id\t{title}\n')
+        work = game_dir / f'{title}_build'
+        (work / 'extract/v1/RomFS').mkdir(parents=True)
+        (work / 'patched_v1').mkdir()
+        (work / 'patched_v1/main').write_bytes(b'module')
+        (work / 'shader/gl').mkdir(parents=True)
+        (work / 'shader/gl/gl_shaders.metallib').write_bytes(b'shader')
+        (work / 'tools').mkdir()
+        (work / 'tools/dmhost').write_bytes(b'fixture host')
         argv = [str(PIPELINE_SCRIPT), 'build', '--game-dir', str(game_dir),
-                '--keys', str(keys), '--repo', str(repo)]
+                '--keys', str(keys), '--repo', str(repo), '--target', 'mac',
+                '--graphics-api', 'gl', '--no-export']
         output = io.StringIO()
         with (mock.patch.dict(os.environ, {
                   'HOME': str(game_dir.parent),
@@ -145,7 +159,7 @@ class PackPipelineTests(unittest.TestCase):
               }, clear=True),
               mock.patch.object(toolchain, 'build_environment', return_value=repaired) as env_builder,
               mock.patch.object(toolchain, 'doctor', side_effect=fake_doctor) as doctor,
-              mock.patch.object(subprocess, 'run', return_value=mock.Mock(returncode=0)),
+              mock.patch.object(subprocess, 'run', return_value=mock.Mock(returncode=0, stdout='', stderr='')),
               mock.patch.object(subprocess, 'Popen', side_effect=fake_popen),
               mock.patch.object(sys, 'argv', argv),
               contextlib.redirect_stdout(output)):
@@ -158,17 +172,19 @@ class PackPipelineTests(unittest.TestCase):
         self.assertEqual(len(popen_calls), 1)
         command, kwargs, inherited_env = popen_calls[0]
         self.assertEqual(command[0], sys.executable)
-        self.assertEqual(command[1], str(upstream.resolve()))
+        self.assertIn(str(upstream.resolve()), command)
+        self.assertIn('--no-runtime-capture', command)
+        self.assertEqual(command[command.index('--platform') + 1], 'mac')
         self.assertEqual(kwargs['cwd'], repo.resolve())
-        # The entrypoint repairs os.environ; stream intentionally inherits it with env=None.
-        self.assertIsNone(kwargs['env'])
+        self.assertEqual(kwargs['env']['NX_NO_RUNTIME_CAPTURE'], '1')
         self.assertEqual(inherited_env['PATH'], repaired['PATH'])
         self.assertEqual(inherited_env['DOTNET_ROOT_ARM64'], repaired['DOTNET_ROOT_ARM64'])
         emitted = self.events(output)
         self.assertEqual([event['ev'] for event in emitted],
-                         ['dependencies', 'stage', 'stage_end'])
+                         ['session', 'dependencies', 'stage', 'stage_end'])
         self.assertTrue(emitted[-1]['ok'])
-        self.assertEqual(emitted[-1]['summary'], 'the IPA is ready')
+        self.assertEqual(emitted[-1]['summary'], 'mac build complete')
+        self.assertTrue(pipeline.manifest_path(work, 'mac').is_file())
 
 
     def test_plan_finds_provisional_profile_in_selected_work(self):
@@ -188,7 +204,7 @@ class PackPipelineTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(plan['name'], 'Echoes of Wisdom')
         self.assertEqual(plan['version'], 'v196608')
-        self.assertTrue(plan['built'])
+        self.assertFalse(plan['built'])  # Legacy directories are not evidence of a completed target build.
         self.assertTrue(plan['has_port'])
 
     def test_export_forwards_named_options_and_selected_work_profile(self):
@@ -216,7 +232,96 @@ class PackPipelineTests(unittest.TestCase):
         output = io.StringIO()
         with mock.patch.object(pipeline, 'stream', return_value=0), contextlib.redirect_stdout(output):
             self.assertEqual(pipeline.cmd_export(args), 1)
-        self.assertFalse(self.events(output)[-1]['ok'])
+        self.assertFalse(next(e for e in self.events(output) if e['ev'] == 'stage_end')['ok'])
+
+
+    def test_manifest_identity_and_output_invalidation(self):
+        root, repo, game_dir, keys, _ = self.make_layout()
+        title = '0100123456789000'
+        game = game_dir / f'Fixture [{title}].nsp'
+        game.write_bytes(b'game fixture')
+        profile = root / 'derived' / title
+        profile.mkdir(parents=True)
+        (profile / 'game.tsv').write_text('package\tv10\nname\tDerived\n')
+        work = game_dir / f'{title}_build'
+        output = work / 'patched_v10/main'
+        output.parent.mkdir(parents=True)
+        output.write_bytes(b'module')
+        data = {'schema': 1, 'status': 'complete', 'target': 'mac', 'title_id': title,
+                'version': 'v10', 'profile_id': title, 'graphics_api': 'gl',
+                'profile': {'dir': str(profile), 'digest': pipeline.profile_digest(profile)},
+                'repo_revision': pipeline.repo_identity(repo), 'inputs': pipeline.input_identity([game]),
+                'outputs': [{'path': 'patched_v10/main', 'size': output.stat().st_size,
+                             'mtime_ns': output.stat().st_mtime_ns}]}
+        pipeline.atomic_json(pipeline.manifest_path(work, 'mac'), data)
+        self.assertTrue(pipeline.manifest_valid(work, 'mac', [game], repo))
+        self.assertFalse(pipeline.manifest_valid(work, 'ios', [game], repo))
+        (profile / 'game.tsv').write_text('package\tv20\n')
+        self.assertFalse(pipeline.manifest_valid(work, 'mac', [game], repo))
+        (profile / 'game.tsv').write_text('package\tv10\nname\tDerived\n')
+        output.write_bytes(b'changed')
+        self.assertFalse(pipeline.manifest_valid(work, 'mac', [game], repo))
+        output.write_bytes(b'module')
+        data['outputs'][0]['mtime_ns'] = output.stat().st_mtime_ns
+        pipeline.atomic_json(pipeline.manifest_path(work, 'mac'), data)
+        game.write_bytes(b'different game')
+        self.assertFalse(pipeline.manifest_valid(work, 'mac', [game], repo))
+
+    def test_numeric_versions_and_rebuild_preserve_user_data(self):
+        root, _, _, _, _ = self.make_layout()
+        self.assertEqual(sorted(['v9', 'v100', 'v20'], key=pipeline.version_key), ['v9', 'v20', 'v100'])
+        for name in ('extract/v1', 'profile/id', 'run/save', 'shader/cache', 'patched_v1', 'ipa'):
+            (root / name).mkdir(parents=True, exist_ok=True)
+            (root / name / 'keep').write_bytes(b'fixture')
+        pipeline.rebuild_outputs(root)
+        for name in ('extract/v1', 'profile/id', 'run/save'):
+            self.assertTrue((root / name / 'keep').is_file())
+        for name in ('shader', 'patched_v1', 'ipa'):
+            self.assertFalse((root / name).exists())
+
+    def test_diagnostics_allowlist_and_redaction(self):
+        import zipfile
+        root, _, _, _, _ = self.make_layout()
+        state = root / 'state'
+        with mock.patch.dict(os.environ, NXLAUNCHER_STATE_DIR=str(state)):
+            session = pipeline.Session('build', 'mac')
+            pipeline.atomic_json(session.path / 'session.json', {'path': '/Users/private/Game/file.nsp',
+                'prod_keys': 'NEVER_EXPORT', 'token': 'NEVER_TOKEN'})
+            (session.path / 'events.jsonl').write_text(json.dumps({'ev': 'log', 'line': 'header_key = abc123'}) + '\n')
+            (session.path / 'subprocess.log').write_text('secret=NEVER_SECRET\n/Users/private/save/data\n' + 'a'*64)
+            (session.path / 'prod.keys').write_text('RAW_KEY_PAYLOAD')
+            (session.path / 'game.nsp').write_text('RAW_GAME_PAYLOAD')
+            (session.path / 'save').mkdir()
+            (session.path / 'save/private').write_text('RAW_SAVE_PAYLOAD')
+            session.finish(1)
+            launcher = root / 'launcher.log'
+            launcher.write_text('/Users/private/launcher password=PRIVATE_PASSWORD')
+            out = root / 'diag.zip'
+            with contextlib.redirect_stdout(io.StringIO()):
+                pipeline.cmd_diagnostics(argparse.Namespace(out=str(out), session=session.id, launcher_log=str(launcher)))
+            with zipfile.ZipFile(out) as archive:
+                self.assertEqual(set(archive.namelist()), {'system.json', 'session-0/session.json',
+                    'session-0/events.jsonl', 'session-0/subprocess.log', 'launcher.log'})
+                text = '\n'.join(archive.read(name).decode() for name in archive.namelist())
+                for secret in ('NEVER_EXPORT', 'NEVER_TOKEN', 'NEVER_SECRET', 'abc123', 'PRIVATE_PASSWORD',
+                               'RAW_KEY_PAYLOAD', 'RAW_GAME_PAYLOAD', 'RAW_SAVE_PAYLOAD', '/Users/private', 'a'*64):
+                    self.assertNotIn(secret, text)
+                json.loads(archive.read('session-0/session.json'))
+                json.loads(archive.read('session-0/events.jsonl'))
+
+    def test_session_persists_complete_events_and_failed_status(self):
+        root, _, _, _, _ = self.make_layout()
+        with mock.patch.dict(os.environ, NXLAUNCHER_STATE_DIR=str(root / 'state')):
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(pipeline.main(['export', '--target', 'mac-app', '--work', str(root / 'missing'),
+                                                '--out', str(root / 'out.app'), '--repo', str(root / 'missing')]), 2)
+            session, = (root / 'state/sessions').iterdir()
+            meta = json.loads((session / 'session.json').read_text())
+            self.assertEqual(meta['status'], 'failed')
+            events = [json.loads(line) for line in (session / 'events.jsonl').read_text().splitlines()]
+            self.assertEqual(events[0]['ev'], 'session')
+            self.assertTrue(events[-1]['error_id'])
+            self.assertTrue(events[-1]['hint'])
 
 
 if __name__ == '__main__':

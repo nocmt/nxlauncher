@@ -1,0 +1,141 @@
+From: NxLauncher maintainers
+Subject: [PATCH] Checked launcher memory overrides alongside upstream region management
+
+Based on official main 201dfd1280684e9d3ceac8b644236fdac11b6cc2.
+
+diff --git a/dm/host/dm_mem_config.h b/dm/host/dm_mem_config.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..7bded6ebd98ce361d5732f214126ea24b5a8d0a7
+--- /dev/null
++++ b/dm/host/dm_mem_config.h
+@@ -0,0 +1,24 @@
++// Strict byte-size parsing and checked layout arithmetic for guest memory overrides.
++#pragma once
++#include <errno.h>
++#include <stdint.h>
++#include <stddef.h>
++#include <stdlib.h>
++static inline int dm_mem_parse(const char *s, size_t *out) {
++    if (!s || *s < '0' || *s > '9') return 0;
++    char *end; errno = 0;
++    unsigned long long n = strtoull(s, &end, 0);
++    if (errno == ERANGE || end == s || *end || !n || n > (uint64_t)PTRDIFF_MAX || n > SIZE_MAX) return 0;
++    *out = (size_t)n; return 1;
++}
++static inline int dm_mem_layout(size_t reserve, size_t alias, size_t stack, size_t page, size_t *heap_offset) {
++    const size_t prefix = 0x10000000;
++    if (!page || (page & (page - 1)) || reserve > PTRDIFF_MAX || !alias || !stack ||
++        reserve % page || alias % page || stack % page || prefix % page || reserve <= prefix) return 0;
++    size_t left = reserve - prefix;
++    if (alias > left) return 0;
++    left -= alias;
++    if (stack >= left) return 0;
++    *heap_offset = prefix + alias + stack;
++    return 1;
++}
+diff --git a/dm/host/hle_svc.c b/dm/host/hle_svc.c
+index 3ded3ab3a0ffb1bc2d6873a8edc94c7b99aaa436..93839e6915f5a1b4cff5191760307784bc60e152 100644
+--- a/dm/host/hle_svc.c
++++ b/dm/host/hle_svc.c
+@@ -3,6 +3,7 @@
+ #include "dm.h"
+ #include <sys/mman.h>
+ #include <errno.h>
++#include "dm_mem_config.h"
+ #include <unistd.h>
+ #include <unistd.h>
+ #include <sched.h>
+@@ -17,8 +18,15 @@
+ // (read on a real device: 6 GB succeeds, 7 GB fails), so it cannot be made any wider --
+ // with an 8 GB reservation, builds from developer accounts that cannot sign that entitlement (free accounts) would exit at this step.
+ #define RESERVE DM_GAME_MEM_RESERVE   // SMBW: the heap needs only 1.47 GB, so the block stays at 5 GB (the total proven on a real device; a single 6 GB block can be reserved, but Metal etc. still need address space)
++// Explicit overrides only; profile defaults are identical on Mac and iOS.
++static size_t g_reserve = RESERVE, g_app_pool = DM_GAME_APP_POOL;
++static size_t env_size(const char *name, size_t fallback) {
++    const char *e = getenv(name); if (!e) return fallback;
++    size_t n;
++    if (!dm_mem_parse(e, &n)) die("%s must be a complete positive byte count (decimal or 0x hex)", name);
++    return n;
++}
+ static uint8_t *g_as;              // ASLR region base = the whole block
+-static size_t g_reserve;           // its size: RESERVE, or more with a DM_ALIAS_SIZE alias region
+ static uint8_t *g_heap; static _Atomic size_t g_heap_cur; static size_t g_heap_cap;
+ // The address range lies entirely within the currently opened (readable and writable) part of the guest heap: such reads need no kernel trap to check, memcpy directly (used where guest memory is read every tick, such as diag.c tk_rd)
+ int dm_guest_heap_readable(uint64_t a, size_t n) { uint64_t b = (uint64_t)(uintptr_t)g_heap; size_t cur = g_heap_cur; return g_heap && a >= b && n <= cur && a - b <= cur - n; }
+@@ -33,15 +41,24 @@ static void *alias_windows_thread(void *arg);
+ static void *regions_thread(void *arg);
+ static void mem_init_once(void) {
+     size_t pg = (size_t)getpagesize();
+-    if (RESERVE < 0x10000000 || DM_GAME_MEM_ALIAS > RESERVE - 0x10000000 ||
+-        DM_GAME_MEM_STACK > RESERVE - 0x10000000 - DM_GAME_MEM_ALIAS ||
+-        ((RESERVE | DM_GAME_MEM_ALIAS | DM_GAME_MEM_STACK) & (pg - 1)))
+-        die("guest address-space profile has invalid native boundaries");
+-    // DM_ALIAS_SIZE=<bytes>: an alias region of that size instead of the profile's, the heap and stacks as they are; the block grows with it. A Switch-sized one (64 GB) holds what
+-    // a game reserves unchanged, for measuring its address regions on the Mac (the NSP script's heap check); an iPhone has no room for more than the profile's
+-    size_t alias = DM_GAME_MEM_ALIAS; const char *as = getenv("DM_ALIAS_SIZE");
+-    if (as && *as) { alias = (size_t)strtoull(as, NULL, 0); if (alias < 0x10000000 || (alias & (pg - 1))) die("DM_ALIAS_SIZE %s: at least 256 MB, in whole host pages", as); }
+-    g_reserve = RESERVE - DM_GAME_MEM_ALIAS + alias;
++    g_reserve = env_size("DM_MEM_RESERVE", RESERVE);
++    g_app_pool = env_size("DM_MEM_POOL", DM_GAME_APP_POOL);
++    size_t alias = env_size("DM_MEM_ALIAS", DM_GAME_MEM_ALIAS);
++    // Preserve upstream's diagnostic alias expansion and heap size. Explicit launcher
++    // alias overrides and DM_ALIAS_SIZE cannot be combined: they describe different layouts.
++    const char *as = getenv("DM_ALIAS_SIZE");
++    if (as && *as) {
++        if (getenv("DM_MEM_ALIAS")) die("DM_ALIAS_SIZE and DM_MEM_ALIAS are mutually exclusive");
++        alias = env_size("DM_ALIAS_SIZE", alias);
++        if (alias < 0x10000000 || alias % pg || alias < DM_GAME_MEM_ALIAS ||
++            alias - DM_GAME_MEM_ALIAS > (size_t)PTRDIFF_MAX - g_reserve)
++            die("DM_ALIAS_SIZE requires page-aligned expansion of the profile alias region");
++        g_reserve += alias - DM_GAME_MEM_ALIAS;
++    }
++    size_t heap_offset;
++    if (!dm_mem_layout(g_reserve, alias, DM_GAME_MEM_STACK, pg, &heap_offset))
++        die("invalid guest layout: reserve=%#zx alias=%#zx stack=%#llx", g_reserve, alias, (unsigned long long)DM_GAME_MEM_STACK);
++    if (g_app_pool & 0xfff) die("DM_MEM_POOL must be 4 KB aligned");
+     g_as = mmap(NULL, g_reserve, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+     if (g_as == MAP_FAILED) die("reserve guest AS");
+     // Fixed partition (all inside the reserved block): alias 2.875 GB, stack 256 MB, heap the remaining 1.625 GB.
+@@ -70,7 +87,7 @@ static void mem_init(void) {
+ // and hands the whole block to its own StandardAllocator (main+0x32137a0) -- so heap size = pool − image footprint, it has only as much as the host reports.
+ // Previously 3 GB was reported here and SetHeapSize never failed: the heap was about 150 MB smaller than on the real device, at the run entry peak the main heap had only about 18 MB left, and under high local load a timing shift made a 128 KB request return null,
+ // which the guest writes to without a null check (CRASH main+0x1b36138, re-verified after merge with inv_tap).
+-#define APP_POOL DM_GAME_APP_POOL   // game profile app_pool (Mario 0xCD500000)
++#define APP_POOL g_app_pool   // game profile app_pool (Mario 0xCD500000)
+ static size_t image_bytes(void) { size_t n = 0; for (int i = 0; i < g_nmod; i++) if (!g_mod[i].nro) n += g_mod[i].size;   // an NRO lives in memory the game allocated (its image and bss buffers)
+     return (n + 0x1fffff) & ~(size_t)0x1fffff; }
+ // Giant bss (modules with the patch area before the base, patch_nso.py FAR): the image bytes beyond the file part. Used memory was reported as "heap + 64 MB", where the 64 MB covers ordinary modules' code and data (Mario's two modules are about 74 MB together,
+@@ -426,6 +443,8 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
+         if (size > g_heap_cur) rc = mprotect(g_heap + g_heap_cur, size - g_heap_cur, PROT_READ | PROT_WRITE);
+         else if (size < g_heap_cur) rc = mprotect(g_heap + size, g_heap_cur - size, PROT_NONE);
+         if (rc) die("SetHeapSize mprotect failed: req=%#zx errno=%d", size, errno);
++        LOG("[mem] SetHeapSize req=%#zx image=%#zx pool=%#zx heap_region=%#zx total=%#zx used=%#llx", size, image_bytes(), g_app_pool, g_heap_cap, g_app_pool,
++            (unsigned long long)(g_heap_cur + DM_GAME_MEM_USED + big_bss_bytes()));
+         if (g_flag.svc) LOG("SetHeapSize %#zx -> base %p mprotect=%d errno=%d", size, g_heap, rc, errno);
+         else if (size > g_heap_cur) LOG("[mem] heap %.2f GB (heap region %.2f GB)", size / 1073741824.0, g_heap_cap / 1073741824.0);
+         g_heap_cur = size;
+diff --git a/dm/host/tests/t_mem_config.c b/dm/host/tests/t_mem_config.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..790d5fd7782691bbbf886cc2f781f9729a2d27e9
+--- /dev/null
++++ b/dm/host/tests/t_mem_config.c
+@@ -0,0 +1,19 @@
++#include <assert.h>
++#include <stdio.h>
++#include "../dm_mem_config.h"
++int main(void) {
++    size_t n = 0, off = 0;
++    assert(dm_mem_parse("4294967296", &n) && n == 0x100000000ull);
++    assert(dm_mem_parse("0x140000000", &n) && n == 0x140000000ull);
++    const char *bad[] = {"", "0", "-1", "+1", " 42", "42 ", "42junk", "0x", "08", "18446744073709551616", "18446744073709551615", "9223372036854775808"};
++    for (unsigned i = 0; i < sizeof bad / sizeof *bad; i++) assert(!dm_mem_parse(bad[i], &n));
++    assert(dm_mem_layout(0x100000000ull, 0x10000000, 0x10000000, 0x4000, &off) && off == 0x30000000);
++    assert(dm_mem_layout(0x140000000ull, 0x118000000ull, 0x10000000, 0x4000, &off));
++    assert(!dm_mem_layout(0x10000000, 0x10000000, 0x10000000, 0x4000, &off));
++    assert(!dm_mem_layout(0x30000000, 0x10000000, 0x10000000, 0x4000, &off));
++    assert(!dm_mem_layout(0x100000000ull, SIZE_MAX, 0x10000000, 0x4000, &off));
++    assert(!dm_mem_layout(0x100000000ull, 0x10000001, 0x10000000, 0x4000, &off));
++    assert(!dm_mem_layout(0x100000000ull, 0x10000000, SIZE_MAX, 0x4000, &off));
++    assert(!dm_mem_layout(SIZE_MAX, 0x10000000, 0x10000000, 0x4000, &off));
++    puts("memory config: complete parsing, overflow, alignment and layout underflow checks passed");
++}

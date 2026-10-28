@@ -178,7 +178,7 @@ def _runtime_smoke(root, env):
         return False, str(exc)
 
 
-def doctor(repo, python, env):
+def doctor(repo, python, env, target=None, graphics_api='auto'):
     """Return JSON-safe readiness checks and suggested commands; never install.
 
     repo is the nxnative source root. python is the interpreter used for builds.
@@ -186,7 +186,10 @@ def doctor(repo, python, env):
     are inspected. All commands we execute are bounded, captured probes.
     """
     env = dict(env)
+    if target not in (None, 'mac', 'ios'):
+        raise ValueError('target must be mac or ios')
     checks, commands = [], []
+    sdk = 'macosx' if target == 'mac' else 'iphoneos'
 
     def add(id, name, ok, detail, hint='', command=None):
         checks.append(dict(id=id, name=name, ok=bool(ok), detail=str(detail),
@@ -206,10 +209,10 @@ def doctor(repo, python, env):
     add('xcode', 'Full Xcode selected', full and version_ok,
         selected_detail + '\n' + version_detail, xcode_hint, xcode_command)
     for id, name, args, hint in (
-        ('iphoneos', 'iPhoneOS SDK', ['--sdk', 'iphoneos', '--show-sdk-path'], xcode_hint),
-        ('metal', 'iPhoneOS Metal compiler', ['--sdk', 'iphoneos', '--find', 'metal'],
+        (sdk if target == 'mac' else 'iphoneos', 'macOS SDK' if target == 'mac' else 'iPhoneOS SDK', ['--sdk', sdk, '--show-sdk-path'], xcode_hint),
+        ('metal', sdk + ' Metal compiler', ['--sdk', sdk, '--find', 'metal'],
          'Install the Metal Toolchain component in Xcode Settings > Components.'),
-        ('metallib', 'iPhoneOS Metal linker', ['--sdk', 'iphoneos', '--find', 'metallib'],
+        ('metallib', sdk + ' Metal linker', ['--sdk', sdk, '--find', 'metallib'],
          'Install the Metal Toolchain component in Xcode Settings > Components.'),
         ('clang', 'Clang compiler', ['--find', 'clang'], xcode_hint),
     ):
@@ -219,10 +222,34 @@ def doctor(repo, python, env):
     make = shutil.which('make', path=env.get('PATH', os.defpath))
     ok, _, detail = probe([make, '--version']) if make else (False, '', 'make not found in PATH.')
     add('make', 'Make', ok, detail, xcode_hint)
-    for tool in ('xcodegen', 'zstd', 'spirv-cross'):
+    tools = ['zstd', 'spirv-cross']
+    if target != 'mac':
+        tools.insert(0, 'xcodegen')
+    if graphics_api == 'gl':
+        tools.append('glslangValidator')
+    for tool in tools:
+        formula = 'glslang' if tool == 'glslangValidator' else tool
         path = shutil.which(tool, path=env.get('PATH', os.defpath))
         add(tool, tool, bool(path), path or f'{tool} not found in PATH.',
-            f'Install {tool} (Homebrew or another package manager).', f'brew install {tool}')
+            f'Install {formula} (Homebrew or another package manager).', f'brew install {formula}')
+    if target is not None:
+        # Enforce versions only for APIs that actually require them. Older Metal
+        # compilers remain usable for Vulkan/GL; NVN's Metal 4 ABI needs Xcode 26.
+        if graphics_api in ('auto', 'nvn'):
+            number = re.search(r'Xcode\s+(\d+)', version)
+            add('xcode-version', 'Xcode 26+ for NVN / Metal 4',
+                bool(number and int(number.group(1)) >= 26), version_detail,
+                'Install Xcode 26 or later for the NVN Metal 4 shader chain.')
+        if target == 'mac':
+            ok, machine, detail = probe(['uname', '-m'])
+            add('host-arm64', 'Apple silicon Mac', ok and machine == 'arm64', detail,
+                'Mac builds execute ARM64 code natively; use an Apple silicon Mac.')
+            if graphics_api in ('auto', 'nvn'):
+                ok, release, detail = probe(['sw_vers', '-productVersion'])
+                major = re.match(r'(\d+)', release)
+                add('macos-version', 'macOS 26+ for NVN / Metal 4',
+                    ok and bool(major and int(major.group(1)) >= 26), detail,
+                    'Upgrade to macOS 26+ for NVN; Vulkan/GL do not use this Metal 4 requirement.')
 
     dotnet = shutil.which('dotnet', path=env.get('PATH', os.defpath))
     dotnet_hint = 'Install the macOS arm64 .NET 10 SDK and runtime; .NET 11 alone is not sufficient.'
@@ -295,5 +322,27 @@ def doctor(repo, python, env):
     add('translator', 'Bundled shader translator', translator_ok,
         translator or 'nxnative repository not found.',
         'Restore the prepared nxnative dependency; the pinned translator must be a file.')
+    if target is not None and graphics_api in ('auto', 'nvn') and repo:
+        lock = Path(repo) / 'dm/gfx/tools/dmsh_chain.lock'
+        if lock.is_file():
+            locked = dict(line.split('\t', 1) for line in lock.read_text().splitlines()
+                          if '\t' in line and not line.startswith('#'))
+            expected = locked.get('metal_' + sdk)
+            if expected:
+                ok, compiler, detail = probe(['xcrun', '--sdk', sdk, 'metal', '--version'])
+                add('metal-version', 'Pinned NVN Metal compiler', ok and expected in compiler,
+                    detail, f'Select the Xcode Metal Toolchain matching {expected}; the upstream chain lock requires this compiler.')
+    if graphics_api not in ('auto', 'nvn'):
+        checks = [c for c in checks if c['id'] != 'translator']
+    formulas = {'zstd', 'spirv-cross', 'dotnet@10', 'glslang', 'xcodegen'}
+    repairs = []
+    for command in commands:
+        argv = shlex.split(command)
+        is_brew = len(argv) == 3 and argv[:2] == ['brew', 'install'] and argv[2] in formulas
+        repairs.append({'id': 'brew-' + argv[2] if is_brew else 'manual-' + str(len(repairs)),
+                        'kind': 'brew' if is_brew else 'manual', 'argv': argv,
+                        'command': command, 'requires_admin': bool(argv and argv[0] == 'sudo'),
+                        'automatic': False})
     return {'ready': all(check['ok'] for check in checks),
-            'checks': checks, 'commands': commands}
+            'checks': checks, 'commands': commands, 'repairs': repairs,
+            **({'target': target, 'graphics_api': graphics_api} if target is not None else {})}

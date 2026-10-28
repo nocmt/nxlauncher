@@ -1,0 +1,822 @@
+From: NxLauncher maintainers
+Subject: [PATCH] Preserve launcher options on upstream 6034fca
+
+Rebased snapshot of every intended local source and test change.
+Font payload and Metal texture-view repairs are already upstream.
+
+diff --git a/dm/host/Makefile b/dm/host/Makefile
+index 45a19dc83f734508659859f9dee050d3116df9bd..595afccebbd38825aaf5ebb8807c2feb23058fd7 100644
+--- a/dm/host/Makefile
++++ b/dm/host/Makefile
+@@ -50,7 +50,7 @@ endif
+ endif
+ .PHONY: FORCE
+ FORCE:
+-dmhost: $(SRC) $(GFX) ../third_party/stb_vorbis/stb_vorbis.c dm.h hle.h dm_input.h pad_slots.h hle_haptics.h haptics_apple.h front.h $(GFX_H) $(GAME_H) $(GAME_STAMP) $(VPX_LIB)
++dmhost: $(SRC) $(GFX) ../third_party/stb_vorbis/stb_vorbis.c dm.h hle.h dm_input.h dm_padmap.h dm_mem_config.h pad_slots.h hle_haptics.h haptics_apple.h front.h $(GFX_H) $(GAME_H) $(GAME_STAMP) $(VPX_LIB)
+ 	clang $(CFLAGS) -I../gfx/nvn/include -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(VPX) -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) -framework Cocoa -framework QuartzCore -framework Metal -framework GameController -framework CoreHaptics -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
+ clean:   # the host and everything make generates for it (gen/: the profile headers, the game stamp and the libvpx build; dmhost_* and *.dSYM beside them, as in .gitignore)
+ 	rm -rf gen dmhost dmhost_* *.dSYM
+diff --git a/dm/host/dm_mem_config.h b/dm/host/dm_mem_config.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..7bded6ebd98ce361d5732f214126ea24b5a8d0a7
+--- /dev/null
++++ b/dm/host/dm_mem_config.h
+@@ -0,0 +1,24 @@
++// Strict byte-size parsing and checked layout arithmetic for guest memory overrides.
++#pragma once
++#include <errno.h>
++#include <stdint.h>
++#include <stddef.h>
++#include <stdlib.h>
++static inline int dm_mem_parse(const char *s, size_t *out) {
++    if (!s || *s < '0' || *s > '9') return 0;
++    char *end; errno = 0;
++    unsigned long long n = strtoull(s, &end, 0);
++    if (errno == ERANGE || end == s || *end || !n || n > (uint64_t)PTRDIFF_MAX || n > SIZE_MAX) return 0;
++    *out = (size_t)n; return 1;
++}
++static inline int dm_mem_layout(size_t reserve, size_t alias, size_t stack, size_t page, size_t *heap_offset) {
++    const size_t prefix = 0x10000000;
++    if (!page || (page & (page - 1)) || reserve > PTRDIFF_MAX || !alias || !stack ||
++        reserve % page || alias % page || stack % page || prefix % page || reserve <= prefix) return 0;
++    size_t left = reserve - prefix;
++    if (alias > left) return 0;
++    left -= alias;
++    if (stack >= left) return 0;
++    *heap_offset = prefix + alias + stack;
++    return 1;
++}
+diff --git a/dm/host/dm_padmap.h b/dm/host/dm_padmap.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..465bfb09c0a1d570f2c0a8297bfc026cd6efb0a8
+--- /dev/null
++++ b/dm/host/dm_padmap.h
+@@ -0,0 +1,32 @@
++// Shared physical-controller face mapping. GameController names buttons by position:
++// A south, B east, X west, Y north. Preserve the legacy fork's glyph mapping:
++// Nintendo keeps Switch positions; Xbox, PlayStation and unknown pads use Xbox positions.
++// Detection comes from 7463eba:dm/host/dm_padmap.h (already tracked in its parent).
++#pragma once
++#include <stdint.h>
++#include <string.h>
++#include <strings.h>
++#include "dm_input.h"
++enum { DM_PADKIND_XBOX = 0, DM_PADKIND_NINTENDO = 1 };
++static inline int dm_padmap_has(const char *s, const char *word) {
++    size_t n = strlen(word);
++    for (; s && *s; s++) if (!strncasecmp(s, word, n)) return 1;
++    return 0;
++}
++static inline int dm_padmap_kind(const char *category, const char *vendor) {
++    static const char *const words[] = {"switch", "nintendo", "joy-con"};
++    for (unsigned i = 0; i < sizeof words / sizeof *words; i++)
++        if (dm_padmap_has(category, words[i]) || dm_padmap_has(vendor, words[i])) return DM_PADKIND_NINTENDO;
++    return DM_PADKIND_XBOX;
++}
++// An explicit Xbox override must not share a sentinel with automatic detection (Xbox is 0).
++static inline int dm_padmap_select(const char *override, const char *category, const char *vendor) {
++    if (override && !strcasecmp(override, "nintendo")) return DM_PADKIND_NINTENDO;
++    if (override && !strcasecmp(override, "xbox")) return DM_PADKIND_XBOX;
++    return dm_padmap_kind(category, vendor);
++}
++static inline uint64_t dm_padmap_face(int kind, int south, int east, int west, int north) {
++    if (kind == DM_PADKIND_NINTENDO)
++        return (east ? DM_BTN_A : 0) | (south ? DM_BTN_B : 0) | (north ? DM_BTN_X : 0) | (west ? DM_BTN_Y : 0);
++    return (south ? DM_BTN_A : 0) | (east ? DM_BTN_B : 0) | (west ? DM_BTN_X : 0) | (north ? DM_BTN_Y : 0);
++}
+diff --git a/dm/host/front_mac.m b/dm/host/front_mac.m
+index 19e5b663f3cc08811537063059870032ad67b834..91f8af9cf12a01099fa86ec880c2ff3dc5038e76 100644
+--- a/dm/host/front_mac.m
++++ b/dm/host/front_mac.m
+@@ -2,15 +2,19 @@
+ // Without DM_WINDOW: the guest runs directly on the current thread, behaving the same as with no front end (windowless tests use this).
+ // The window is fullscreen-capable (the green button and ⌃⌘F); DM_FULLSCREEN starts it that way. ⌘Q quits; the left mouse button is the touchscreen.
+ // Key map (Nintendo layout): WASD left stick, arrow keys D-pad, J=A K=B U=X I=Y, Q=L E=R, Z=ZL C=ZR, F=press left stick G=press right stick, Return=+ Tab=−, Space=shake the controller.
+-// Controllers: buttons by position as on the iPhone (right A, bottom B, top X, left Y), shoulders L R, triggers ZL ZR, Menu + Options −, both sticks and their presses.
++// Mouse: left button touches the screen; DM_MOUSE_PAD=1 maps it to A. Right drag or unpressed movement drives the right stick.
++// DM_WINDOW_SIZE=WxH sets the initial size; DM_FPS=0 hides the FPS/frame-time overlay; DM_MOUSE_DIAG=1 logs input delivery.
++// Controllers: shared Mac/iOS glyph mapping (DM_PADMAP=nintendo|xbox overrides vendor detection), shoulders L R, triggers ZL ZR, Menu + Options −, both sticks and their presses.
+ // Each controller is a player of its own (local co-op): the first one connected is player 1, together with the keyboard, the next player 2, and so on up to 8 (pad_slots.h);
+ // DM_PAD_MERGE=1 merges every controller into player 1 instead, DM_KBD_PLAYER=own makes the keyboard player 1 on its own, with the controllers from player 2 on.
+ #import <Cocoa/Cocoa.h>
+ #import <QuartzCore/CAMetalLayer.h>
++#import <QuartzCore/CATransaction.h>
+ #import <Metal/Metal.h>
+ #import <GameController/GameController.h>
+ #include "dm.h"
+ #include "dm_input.h"
++#include "dm_padmap.h"
+ #include "front.h"
+ #include "hle.h"
+ #include "pad_slots.h"
+@@ -19,8 +23,19 @@
+ #include <math.h>
+ 
+ static CAMetalLayer *g_layer;
++static NSView *g_view;
++static NSWindow *g_win;
+ static uint64_t g_btn;
+ static int g_w, g_a, g_s, g_d;
++static int32_t g_look_x, g_look_y;
++static double g_look_until;
++static NSPoint g_last_mouse;
++static int g_mouse_seen, g_mouse_diag, g_mouse_pad;
++static long g_mouse_events, g_mouse_clicks;
++static uint64_t g_mouse_btn, g_fps_frames;
++static double g_fps_t;
++static NSTextField *g_fps_label;
++#define DM_WINDOW_CORNER 10.0
+ 
+ void *front_metal_layer(void) { return (__bridge void *)g_layer; }
+ static _Atomic int g_screen_fps;   // the window's screen's maximumFramesPerSecond, kept up to date when the window moves to another screen
+@@ -30,7 +45,7 @@
+ // the frame interval jumping between them. In fullscreen, a screen whose rate is not a multiple of the game's switches to the mode of the same size with the highest rate that is (144 → 120 Hz
+ // for 60 and 30 fps), for this app only: macOS switches it back when the host quits, crashes included, and leaving fullscreen or that screen switches it back at once. A window keeps the
+ // screen's rate, because the switch changes the whole screen for every app and most external screens go black for a second or more. A screen with no such mode keeps the virtual ticks
+-static NSWindow *g_win; static _Atomic int g_match_want;   // the game's window; the frame rate to match (0 = not known yet), written by the present thread only
++static _Atomic int g_match_want;   // the frame rate to match (0 = not known yet), written by the present thread only
+ static CGDirectDisplayID g_match_id; static CGDisplayModeRef g_match_orig;   // main thread: the screen this host switched and its own mode (NULL = none switched)
+ static double mode_hz(CGDisplayModeRef m) { double hz = CGDisplayModeGetRefreshRate(m); return hz > 0 ? hz : 0; }   // 0 = not known (older built-in screens report none)
+ static int hz_multiple(double hz, int fps) { double k = round(hz / fps); return k >= 1 && fabs(hz / fps - k) < 0.01; }   // 59.94 Hz counts as 60
+@@ -83,8 +98,51 @@ void front_screen_match(int fps) {
+ }
+ static void push(void) {
+     int32_t lx = (g_d - g_a) * 32767, ly = (g_w - g_s) * 32767;
+-    dm_input_set(g_btn, lx, ly, 0, 0);
++    dm_input_set(g_btn | g_mouse_btn, lx, ly, g_look_x, g_look_y);
+ }
++static void look_delta(NSPoint p) {
++    if (!g_mouse_seen) { g_mouse_seen = 1; g_last_mouse = p; return; }
++    double dx = p.x - g_last_mouse.x, dy = p.y - g_last_mouse.y;
++    g_last_mouse = p;
++    g_look_x = (int32_t)fmax(-32767, fmin(32767, g_look_x + dx * 260));
++    g_look_y = (int32_t)fmax(-32767, fmin(32767, g_look_y + dy * 260));
++    g_look_until = CACurrentMediaTime() + 0.12;
++    push();
++}
++// Content-view mouse handling leaves title-bar, window-button and resize events to AppKit.
++@interface DmGameView : NSView @end
++@implementation DmGameView
++- (NSView *)hitTest:(NSPoint)p { return NSPointInRect(p, self.bounds) ? self : nil; }
++- (void)mouseDown:(NSEvent *)e {
++    if (g_mouse_pad) { g_mouse_btn |= DM_BTN_A; push(); return; }
++    [self mouseDragged:e];
++}
++- (void)mouseDragged:(NSEvent *)e {
++    if (g_mouse_pad) return;
++    NSPoint p = [self convertPoint:e.locationInWindow fromView:nil]; NSSize b = self.bounds.size;
++    double w = b.width, h = b.height;
++    if (w <= 0 || h <= 0) return;
++    if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;   // the centered 16:9 picture the present fits into the view, as on the iPhone (DmGamepad.m)
++    double x0 = (b.width - w) / 2, y0 = (b.height - h) / 2;
++    dm_touch t = {0, (float)fmin(fmax((p.x - x0) / w, 0), 0.999), (float)fmin(fmax(1 - (p.y - y0) / h, 0), 0.999)};   // The AppKit view origin is at bottom left, the touchscreen origin is at top left
++    dm_touch_set(&t, 1);
++}
++- (void)mouseUp:(NSEvent *)e { (void)e; if (g_mouse_pad) { g_mouse_btn &= ~DM_BTN_A; push(); } else dm_touch_set(NULL, 0); }
++- (void)rightMouseDown:(NSEvent *)e { g_mouse_seen = 1; g_last_mouse = [self convertPoint:e.locationInWindow fromView:nil]; }
++- (void)rightMouseDragged:(NSEvent *)e { look_delta([self convertPoint:e.locationInWindow fromView:nil]); }
++- (void)rightMouseUp:(NSEvent *)e { (void)e; g_look_until = 0; g_look_x = g_look_y = 0; push(); }
++- (void)mouseMoved:(NSEvent *)e { if (![NSEvent pressedMouseButtons]) look_delta([self convertPoint:e.locationInWindow fromView:nil]); }
++// The drawable follows the view in pixels: a layer assigned to a layer-backed view kept the drawable at the first window's 1280x720 in fullscreen too, so the game picture was
++// scaled down to it and up again by the compositor
++- (void)fitDrawable {
++    CAMetalLayer *l = (CAMetalLayer *)self.layer; if (![l isKindOfClass:CAMetalLayer.class] || !self.window) return;
++    l.contentsScale = self.window.backingScaleFactor;
++    NSSize px = [self convertSizeToBacking:self.bounds.size]; if (px.width < 1 || px.height < 1 || CGSizeEqualToSize(l.drawableSize, px)) return;
++    l.drawableSize = px; LOG("front end: drawable %.0fx%.0f", px.width, px.height);
++}
++- (void)setFrameSize:(NSSize)s { [super setFrameSize:s]; [self fitDrawable]; }
++- (void)viewDidChangeBackingProperties { [super viewDidChangeBackingProperties]; [self fitDrawable]; }
++@end
+ static int key_bit(unsigned short code) {
+     switch (code) {
+         case 38: return 0;  case 40: return 1;  case 32: return 2;  case 34: return 3;    // J K U I → A B X Y
+@@ -99,10 +157,52 @@ static void on_key(NSEvent *e, int down) {
+     unsigned short c = e.keyCode;
+     switch (c) { case 13: g_w = down; break; case 0: g_a = down; break; case 1: g_s = down; break; case 2: g_d = down; break; }
+     int b = key_bit(c);
+-    uint64_t m = b >= 0 ? 1ull << b : c == 49 ? DM_BTN_SHAKE : 0;   // Space: shaken while held
++    uint64_t m = b >= 0 ? 1ull << b : c == 49 ? DM_BTN_SHAKE : 0;
+     g_btn = down ? (g_btn | m) : (g_btn & ~m);
+     push();
+ }
++static void layout_layer(void) {
++    if (!g_layer || !g_view) return;
++    [CATransaction begin]; [CATransaction setDisableActions:YES];
++    g_layer.frame = g_view.bounds;
++    g_layer.contentsScale = g_view.window ? g_view.window.backingScaleFactor : 1.0;
++    [CATransaction commit];
++    if (g_fps_label) g_fps_label.frame = NSMakeRect(MAX(0, g_view.bounds.size.width - 250), MAX(0, g_view.bounds.size.height - 66), 240, 26);
++}
++static void reset_input(void) {
++    g_btn = g_mouse_btn = 0; g_w = g_a = g_s = g_d = 0;
++    g_look_x = g_look_y = g_mouse_seen = 0; g_look_until = 0;
++    push(); dm_touch_set(NULL, 0);
++    for (int p = 0; p < DM_PLAYERS; p++) dm_pad_set_player(p, 0, 0, 0, 0, 0);
++}
++static void tick(id timer) {
++    (void)timer;
++    if (CACurrentMediaTime() > g_look_until) {
++        g_look_x = (int32_t)(g_look_x * 0.75); g_look_y = (int32_t)(g_look_y * 0.75);
++        if (abs(g_look_x) < 200) g_look_x = 0;
++        if (abs(g_look_y) < 200) g_look_y = 0;
++    }
++    push();
++    static unsigned ticks;
++    if (g_mouse_diag && ++ticks % 30 == 0 && g_win) {
++        NSRect f = g_win.frame; NSPoint m = NSEvent.mouseLocation;
++        LOG("[ui] mouse diagnostic active=%d key=%d frame=%.0f,%.0f %.0fx%.0f mouse=%.0f,%.0f clicks=%ld", NSApp.isActive, g_win.isKeyWindow, f.origin.x, f.origin.y, f.size.width, f.size.height, m.x, m.y, g_mouse_clicks);
++    }
++    if (!g_fps_label) return;
++    uint64_t frame = dm_guest_frame(); double now = CACurrentMediaTime(), dt = now - g_fps_t;
++    if (dt >= 0.2) {
++        uint64_t df = frame - g_fps_frames;
++        g_fps_label.stringValue = [NSString stringWithFormat:@"%.1f fps   %.1f ms   frame %llu", df / dt, df ? dt * 1000.0 / df : 0, (unsigned long long)frame];
++        g_fps_t = now; g_fps_frames = frame;
++    }
++}
++@interface DmFrontTimer : NSObject
+++ (void)start;
++@end
++@implementation DmFrontTimer
+++ (void)start { [NSTimer scheduledTimerWithTimeInterval:1.0 / 30.0 target:[DmFrontTimer new] selector:@selector(onTick:) userInfo:nil repeats:YES]; }
++- (void)onTick:(NSTimer *)timer { tick(timer); }
++@end
+ 
+ // Physical controllers (GameController) go to dm_pad_set_player, mapped as the iPhone's (DmGamepad.m read_pad, same layout); player 1's is ORed with the keyboard, a stick takes
+ // whichever is deflected more (hle_hid.c). DM_KEYS uses player 1's path, so player 1's controller touched during a script takes it over.
+@@ -114,11 +214,13 @@ static void on_key(NSEvent *e, int down) {
+ static int g_merge, g_kbd_own;
+ static int32_t pad_axis(float v) { return (int32_t)(fmaxf(-1.f, fminf(1.f, v)) * DM_STICK_MAX); }
+ static void pad_read(GCExtendedGamepad *g) {
++    if (!NSApp.isActive || !g_win.isKeyWindow) return;
++    int kind = dm_padmap_select(getenv("DM_PADMAP"), g.controller.productCategory.UTF8String, g.controller.vendorName.UTF8String);
+     int p = g_merge ? 0 : pad_slot_of(&g_slots, (__bridge const void *)g.controller); if (p < 0) return;
+     dm_haptics_apple_controller(p, g.controller);
+     uint64_t m = 0;
+     #define K(btn, bit) if (btn.isPressed) m |= bit
+-    K(g.buttonB, DM_BTN_A); K(g.buttonA, DM_BTN_B); K(g.buttonY, DM_BTN_X); K(g.buttonX, DM_BTN_Y);   // by position: right A, bottom B, top X, left Y
++    m |= dm_padmap_face(kind, g.buttonA.isPressed, g.buttonB.isPressed, g.buttonX.isPressed, g.buttonY.isPressed);
+     K(g.leftShoulder, DM_BTN_L); K(g.rightShoulder, DM_BTN_R); K(g.leftTrigger, DM_BTN_ZL); K(g.rightTrigger, DM_BTN_ZR);
+     K(g.buttonMenu, DM_BTN_PLUS); K(g.buttonOptions, DM_BTN_MINUS); K(g.leftThumbstickButton, DM_BTN_LS); K(g.rightThumbstickButton, DM_BTN_RS);   // nil on pads without them: not pressed
+     K(g.dpad.left, DM_BTN_LEFT); K(g.dpad.up, DM_BTN_UP); K(g.dpad.right, DM_BTN_RIGHT); K(g.dpad.down, DM_BTN_DOWN);
+@@ -166,32 +268,6 @@ static void pads_start(void) {
+     pads_changed(nil);
+ }
+ 
+-// Mouse as a single-point touchscreen (front.h dm_touch_set): left button down / drag = finger 0, release = lifted. The content view takes the clicks,
+-// not a window-wide event monitor, so clicks on the title bar, the window buttons and the resize edges still reach AppKit.
+-@interface DmGameView : NSView @end
+-@implementation DmGameView
+-- (void)mouseDown:(NSEvent *)e { [self mouseDragged:e]; }
+-- (void)mouseDragged:(NSEvent *)e {
+-    NSPoint p = [self convertPoint:e.locationInWindow fromView:nil]; NSSize b = self.bounds.size;
+-    double w = b.width, h = b.height;
+-    if (w <= 0 || h <= 0) return;
+-    if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;   // the centered 16:9 picture the present fits into the view, as on the iPhone (DmGamepad.m)
+-    double x0 = (b.width - w) / 2, y0 = (b.height - h) / 2;
+-    dm_touch t = {0, (float)fmin(fmax((p.x - x0) / w, 0), 0.999), (float)fmin(fmax(1 - (p.y - y0) / h, 0), 0.999)};   // The AppKit view origin is at bottom left, the touchscreen origin is at top left
+-    dm_touch_set(&t, 1);
+-}
+-- (void)mouseUp:(NSEvent *)e { (void)e; dm_touch_set(NULL, 0); }
+-// The drawable follows the view in pixels: a layer assigned to a layer-backed view kept the drawable at the first window's 1280x720 in fullscreen too, so the game picture was
+-// scaled down to it and up again by the compositor
+-- (void)fitDrawable {
+-    CAMetalLayer *l = (CAMetalLayer *)self.layer; if (![l isKindOfClass:CAMetalLayer.class] || !self.window) return;
+-    l.contentsScale = self.window.backingScaleFactor;
+-    NSSize px = [self convertSizeToBacking:self.bounds.size]; if (px.width < 1 || px.height < 1 || CGSizeEqualToSize(l.drawableSize, px)) return;
+-    l.drawableSize = px; LOG("front end: drawable %.0fx%.0f", px.width, px.height);
+-}
+-- (void)setFrameSize:(NSSize)s { [super setFrameSize:s]; [self fitDrawable]; }
+-- (void)viewDidChangeBackingProperties { [super viewDidChangeBackingProperties]; [self fitDrawable]; }
+-@end
+ 
+ typedef struct { void (*fn)(void); } guest_arg;
+ static void *guest_tramp(void *p) {
+@@ -210,6 +286,7 @@ void front_run(void (*guest)(void)) {
+         [NSApplication sharedApplication];
+         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+         NSRect r = NSMakeRect(0, 0, 1280, 720);
++        { const char *e = getenv("DM_WINDOW_SIZE"); unsigned w, h; if (e && sscanf(e, "%ux%u", &w, &h) == 2 && w >= 640 && h >= 360) r = NSMakeRect(0, 0, w, h); }
+         NSWindow *win = [[NSWindow alloc] initWithContentRect:r
+                                                     styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
+                                                       backing:NSBackingStoreBuffered defer:NO];
+@@ -217,14 +294,23 @@ void front_run(void (*guest)(void)) {
+         // Fullscreen: without FullScreenPrimary the green button only zooms the window. The present path already scales
+         // the game picture to fit the drawable with black bars around it, so fullscreen keeps the game's aspect ratio.
+         win.collectionBehavior = NSWindowCollectionBehaviorFullScreenPrimary;
+-        NSView *v = win.contentView = [[DmGameView alloc] initWithFrame:r];
+-        v.wantsLayer = YES;
++        g_win = win;
++        win.minSize = NSMakeSize(640, 360);
++        win.acceptsMouseMovedEvents = YES;
++        g_mouse_pad = getenv("DM_MOUSE_PAD") && atoi(getenv("DM_MOUSE_PAD")) != 0;
++        g_mouse_diag = getenv("DM_MOUSE_DIAG") && strcmp(getenv("DM_MOUSE_DIAG"), "0");
++        DmGameView *v = [[DmGameView alloc] initWithFrame:r];
++        win.contentView = v; v.wantsLayer = YES;
++        g_view = v;
+         g_layer = [CAMetalLayer layer];
+         g_layer.device = MTLCreateSystemDefaultDevice();
+         g_layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+         g_layer.contentsScale = win.backingScaleFactor;
+         if (getenv("DM_METAL_HUD") && atoi(getenv("DM_METAL_HUD"))) { g_layer.developerHUDProperties = @{@"mode": @"default"}; LOG("front end: Metal performance HUD on (DM_METAL_HUD)"); }   // Apple's HUD over the game: frame rate, frame and GPU time, memory
+         v.layer = g_layer; [(DmGameView *)v fitDrawable];
++        g_layer.masksToBounds = YES; g_layer.cornerRadius = DM_WINDOW_CORNER;
++        g_layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
++        g_layer.cornerCurve = kCACornerCurveContinuous;
+         [win center];
+         [win makeKeyAndOrderFront:nil];
+         g_screen_fps = (int)(win.screen ?: NSScreen.mainScreen).maximumFramesPerSecond;
+@@ -237,6 +323,18 @@ void front_run(void (*guest)(void)) {
+         [[bar addItemWithTitle:@"Window" action:nil keyEquivalent:@""] setSubmenu:wm];
+         [wm addItemWithTitle:@"Enter Full Screen" action:@selector(toggleFullScreen:) keyEquivalent:@"f"].keyEquivalentModifierMask = NSEventModifierFlagControl | NSEventModifierFlagCommand;
+         NSApp.mainMenu = bar;
++        layout_layer();
++        if (!getenv("DM_FPS") || strcmp(getenv("DM_FPS"), "0")) {
++            g_fps_label = [NSTextField labelWithString:@""];
++            g_fps_label.wantsLayer = YES;
++            g_fps_label.font = [NSFont monospacedDigitSystemFontOfSize:14 weight:NSFontWeightMedium];
++            g_fps_label.textColor = NSColor.whiteColor;
++            g_fps_label.backgroundColor = [NSColor colorWithSRGBRed:0 green:0 blue:0 alpha:0.45];
++            g_fps_label.alignment = NSTextAlignmentRight;
++            g_fps_label.bezeled = NO; g_fps_label.bordered = NO; g_fps_label.drawsBackground = YES;
++            [v addSubview:g_fps_label]; layout_layer(); g_fps_t = CACurrentMediaTime();
++        }
++        [DmFrontTimer start];
+         if (getenv("DM_FULLSCREEN")) dispatch_async(dispatch_get_main_queue(), ^{ [win toggleFullScreen:nil]; });   // start in fullscreen
+         for (NSNotificationName nm in @[GCControllerDidConnectNotification, GCControllerDidDisconnectNotification])
+             [NSNotificationCenter.defaultCenter addObserverForName:nm object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
+@@ -251,19 +349,29 @@ void front_run(void (*guest)(void)) {
+             if (!e.isARepeat) on_key(e, e.type == NSEventTypeKeyDown);
+             return nil;   // Swallow it to avoid the system beep
+         }];
++        [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp | NSEventMaskMouseMoved | NSEventMaskLeftMouseDragged handler:^NSEvent *(NSEvent *e) {
++            if (e.window == win) {
++                g_mouse_events++;
++                if (e.type == NSEventTypeLeftMouseDown || e.type == NSEventTypeRightMouseDown || e.type == NSEventTypeLeftMouseUp || e.type == NSEventTypeRightMouseUp) {
++                    g_mouse_clicks++;
++                    if (g_mouse_diag) LOG("[ui] mouse event type=%d location=%.0f,%.0f active=%d key=%d", (int)e.type, e.locationInWindow.x, e.locationInWindow.y, NSApp.isActive, win.isKeyWindow);
++                }
++            }
++            return e;
++        }];
+         [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowWillCloseNotification object:win queue:nil
+                                                       usingBlock:^(NSNotification *n) { (void)n; exit(0); }];
+         // Lifecycle (hle.h / dm.h): focus lost → 2, focus regained → 1; minimized → 3 + audio paused + GPU suspended, restored → resume (followed by focus regained → 1)
+         NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
+-        [nc addObserverForName:NSWindowDidChangeScreenNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; if (win.screen) { g_screen_fps = (int)win.screen.maximumFramesPerSecond; g_layer.contentsScale = win.backingScaleFactor; } screen_match_apply(); }];
+-        // Entering and leaving fullscreen: the layer is layer-backed, so its frame (and with it the drawable) follows the
+-        // content view by itself; only the scale factor has to be carried over to the screen the window ended up on. The screen's rate is matched in fullscreen only (screen_match_apply)
+-        [nc addObserverForName:NSWindowDidEnterFullScreenNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; g_layer.contentsScale = win.backingScaleFactor; screen_match_apply(); }];
+-        [nc addObserverForName:NSWindowDidExitFullScreenNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; g_layer.contentsScale = win.backingScaleFactor; screen_match_apply(); }];
+-        [nc addObserverForName:NSWindowDidResignKeyNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; if (!win.miniaturized) dm_focus_set(2); }];
++        [nc addObserverForName:NSWindowDidResizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; [(DmGameView *)v fitDrawable]; layout_layer(); }];
++        [nc addObserverForName:NSWindowDidChangeScreenNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; if (win.screen) { g_screen_fps = (int)win.screen.maximumFramesPerSecond; [(DmGameView *)v fitDrawable]; layout_layer(); } screen_match_apply(); }];
++        [nc addObserverForName:NSWindowWillEnterFullScreenNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; v.layer.cornerRadius = 0; }];
++        [nc addObserverForName:NSWindowDidEnterFullScreenNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; v.layer.cornerRadius = 0; [(DmGameView *)v fitDrawable]; layout_layer(); screen_match_apply(); }];
++        [nc addObserverForName:NSWindowDidExitFullScreenNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; v.layer.cornerRadius = DM_WINDOW_CORNER; [(DmGameView *)v fitDrawable]; layout_layer(); screen_match_apply(); }];
++        [nc addObserverForName:NSWindowDidResignKeyNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; if (!win.miniaturized) dm_focus_set(2); reset_input(); }];
+         [nc addObserverForName:NSWindowDidBecomeKeyNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; dm_focus_set(1); }];
+         [nc addObserverForName:NSWindowDidMiniaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; dm_focus_set(3); dm_audio_suspend(1); dm_gfx_suspend(1); }];
+-        [nc addObserverForName:NSWindowDidDeminiaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; dm_gfx_suspend(0); dm_audio_suspend(0); dm_focus_set(2); }];
++        [nc addObserverForName:NSWindowDidDeminiaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; dm_gfx_suspend(0); dm_audio_suspend(0); dm_focus_set(2); reset_input(); }];
+         // Guest thread: 64 MiB stack (the Switch main thread stack is specified by npdm; the host gives plenty)
+         static guest_arg ga; ga.fn = guest;
+         pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 64u << 20);
+diff --git a/dm/host/hle_hid.c b/dm/host/hle_hid.c
+index eaa8117723aa609ec7b24dd4d97988b46fe5ee2d..07fecd18935fe535fce778bcf468574f5de366eb 100644
+--- a/dm/host/hle_hid.c
++++ b/dm/host/hle_hid.c
+@@ -445,6 +445,14 @@ HLE_FORCE("_ZN2nn3hid28ShowControllerFirmwareUpdateERKNS0_27ControllerFirmwareUp
+ // without checking the mode, so in console mode the state stays empty (only the header is written). Super Mario Galaxy's pointer is the touch screen in handheld mode
+ int touch_fill_n(void *out, int max, uint64_t now_ns);
+ static void touch_read(void *s, int n) {
++    // DM_TOUCH_LOG=1: the reads themselves (does the game ask for the touch state at all, and in
++    // which operation mode) plus the points it gets (in hle_touch.c).
++    static _Atomic unsigned long reads;
++    unsigned long read = atomic_fetch_add_explicit(&reads, 1, memory_order_relaxed) + 1;
++    static _Atomic int lg = -1;
++    int enabled = atomic_load_explicit(&lg, memory_order_relaxed);
++    if (enabled < 0) { enabled = getenv("DM_TOUCH_LOG") != NULL; atomic_store_explicit(&lg, enabled, memory_order_relaxed); }
++    if (enabled && (read <= 4 || read % 300 == 0)) LOG("[hid] the game reads the touch screen state (read %lu, the operation mode is %d, %d slots)", read, dm_opmode(), n);
+     if (dm_opmode() == 0) { touch_fill_n(s, n, now_ns()); return; }
+     int64_t *p = s; p[0] = atomic_fetch_add(&g_sampling, 1) + 1; ((int32_t *)s)[2] = 0; ((int32_t *)s)[3] = 0;
+ }
+diff --git a/dm/host/hle_oe.c b/dm/host/hle_oe.c
+index c3a5780bdddf9ab218b893d238a431f1564cd127..3a75d5e7bfba059ac57a2b71fba7b991dd731b93 100644
+--- a/dm/host/hle_oe.c
++++ b/dm/host/hle_oe.c
+@@ -1,14 +1,23 @@
+ // nn::oe (application operating environment): on the real device the console state is queried through the am/oe services; the host gives fixed state directly.
+ // oe::Initialize is in hle_sdkinit.c, not here.
+-// Environment switches: DM_OPMODE=0 handheld / 1 console (default: the profile's op_mode, console unless set; console corresponds to the console-mode render profile); DM_LANG=language code (default en-US; the iOS app sets it from the IPA's DMLanguage, main.m).
++// Environment switches: DM_OPMODE=0 handheld / 1 console (default: the profile's op_mode, console unless set; console corresponds to the console-mode render profile); DM_LANG=language code (Mac fallback: preferred system language mapped to zh-Hans/en-US; iOS: IPA DMLanguage, otherwise en-US).
+ #include "hle.h"
++#include <TargetConditionals.h>
++#if TARGET_OS_OSX
++#include <CoreFoundation/CoreFoundation.h>
++#endif
+ 
+ // The operation mode is runtime state (the front end can change it: iOS overheat downgrade switches to handheld): the single source is here, taken once from DM_OPMODE at startup, the environment variable is not read again afterwards
+ #include <stdatomic.h>
+ static _Atomic int g_opmode = -1;
+ int dm_opmode(void) {
+     int m = g_opmode;
+-    if (m < 0) { const char *e = getenv("DM_OPMODE"); int v = e ? atoi(e) : DM_GAME_OPMODE; int exp = -1; atomic_compare_exchange_strong(&g_opmode, &exp, v); m = g_opmode; }
++    if (m < 0) {
++        const char *e = getenv("DM_OPMODE"); int v = e ? atoi(e) : DM_GAME_OPMODE, exp = -1;
++        if (atomic_compare_exchange_strong(&g_opmode, &exp, v))
++            LOG("[oe] operation mode=%d (%s), DM_OPMODE=%s profile=%d", v, v == 0 ? "handheld" : "console", e ? e : "(not set)", DM_GAME_OPMODE);
++        m = g_opmode;
++    }
+     return m;
+ }
+ // ---------- System notification queue (AppletMessage): front end state changes → fetched by the game every frame with TryPopNotificationMessage ----------
+@@ -208,11 +217,43 @@ HLE_FORCE("_ZN2nn2oe28SetResumeNotificationEnabledEb", "resume notification swit
+ HLE_FORCE("_ZN2nn2oe42SetOperationModeChangedNotificationEnabledEb", "operation mode change notification switch", void, h_oe_SetOpModeNtf, unsigned on) { g_ntf_opmode = on & 0xff; }
+ HLE_FORCE("_ZN2nn2oe44SetPerformanceModeChangedNotificationEnabledEb", "performance mode change notification switch", void, h_oe_SetPerfModeNtf, unsigned on) { g_ntf_perfmode = on & 0xff; }
+ 
+-// nn::settings::LanguageCode = struct { char string[8]; }, 8 bytes returned by value in x0
+-HLE_FORCE("_ZN2nn2oe18GetDesiredLanguageEv", "system language query; value from DM_LANG", uint64_t, h_oe_GetLang, void) {
++// Legacy Mac fallback only: Chinese/Sinitic preferred tags select Simplified Chinese;
++// other tags select English. Explicit DM_LANG is copied verbatim below, including languages
++// outside this fallback. iOS keeps the upstream IPA DMLanguage -> DM_LANG selection.
++#if TARGET_OS_OSX
++static const char *mac_language_tag(const char *tag) {
++    char primary[4] = {0}; unsigned i = 0;
++    while (tag && tag[i] && tag[i] != '-' && tag[i] != '_' && i < 3) { primary[i] = tag[i] | 0x20; i++; }
++    static const char *const chinese[] = {"zh", "yue", "wuu", "hak", "nan", "cmn", "gan", "hsn", "lzh"};
++    for (unsigned j = 0; j < sizeof chinese / sizeof *chinese; j++)
++        if (!strcmp(primary, chinese[j])) return "zh-Hans";
++    return "en-US";
++}
++static const char *mac_system_language(void) {
++    const char *code = "en-US";
++    CFArrayRef languages = CFLocaleCopyPreferredLanguages();
++    if (languages) {
++        char tag[128];
++        if (CFArrayGetCount(languages) > 0 && CFStringGetCString((CFStringRef)CFArrayGetValueAtIndex(languages, 0), tag, sizeof tag, kCFStringEncodingUTF8))
++            code = mac_language_tag(tag);
++        CFRelease(languages);
++    }
++    return code;
++}
++#endif
++static const char *desired_language(void) {
+     const char *e = getenv("DM_LANG");
++    if (e && *e) return e;
++#if TARGET_OS_OSX
++    return mac_system_language();
++#else
++    return "en-US";
++#endif
++}
++// nn::settings::LanguageCode = struct { char string[8]; }, 8 bytes returned by value in x0
++HLE_FORCE("_ZN2nn2oe18GetDesiredLanguageEv", "system language query; DM_LANG, otherwise Mac preferred language or en-US", uint64_t, h_oe_GetLang, void) {
+     char code[8] = {0};
+-    strncpy(code, e && *e ? e : "en-US", sizeof code - 1);
++    strncpy(code, desired_language(), sizeof code - 1);
+     uint64_t v; memcpy(&v, code, 8);
+     return v;
+ }
+@@ -220,7 +261,7 @@ HLE_FORCE("_ZN2nn2oe18GetDesiredLanguageEv", "system language query; value from
+ // The console's region (Animal Crossing: New Horizons 3.0.3): the SDK asks settings::system::GetRegionCode, which reaches set:sys. A region that fits the language the game is given:
+ // 0 Japan, 1 the Americas, 2 Europe, 4 Hong Kong / Taiwan / Korea (nn::settings::system::RegionCode; 3 Australia and 5 China are left out, no language points at them alone)
+ HLE_FORCE("_ZN2nn2oe13GetRegionCodeEv", "console region (set:sys); from DM_LANG", int, h_oe_GetRegion, void) {
+-    const char *e = getenv("DM_LANG"); if (!e || !*e) e = "en-US";
++    const char *e = desired_language();
+     int r = !strncmp(e, "ja", 2) ? 0 : !strncmp(e, "ko", 2) || !strncmp(e, "zh", 2) ? 4 : !strcmp(e, "en-US") || !strcmp(e, "fr-CA") || !strcmp(e, "es-419") || !strcmp(e, "pt-BR") ? 1 : 2;
+     static int once; if (!once++) LOG("oe::GetRegionCode: %d for language %s", r, e);
+     return r;
+diff --git a/dm/host/hle_svc.c b/dm/host/hle_svc.c
+index 4e1e061374f53043ec692b8c53ec1af41be7e299..7299c312bbace6982365c1f823b98e2c41bb156d 100644
+--- a/dm/host/hle_svc.c
++++ b/dm/host/hle_svc.c
+@@ -3,6 +3,7 @@
+ #include "dm.h"
+ #include <sys/mman.h>
+ #include <errno.h>
++#include "dm_mem_config.h"
+ #include <unistd.h>
+ #include <unistd.h>
+ #include <sched.h>
+@@ -16,6 +17,14 @@
+ // (read on a real device: 6 GB succeeds, 7 GB fails), so it cannot be made any wider --
+ // with an 8 GB reservation, builds from developer accounts that cannot sign that entitlement (free accounts) would exit at this step.
+ #define RESERVE DM_GAME_MEM_RESERVE   // SMBW: the heap needs only 1.47 GB, so the block stays at 5 GB (the total proven on a real device; a single 6 GB block can be reserved, but Metal etc. still need address space)
++// Explicit overrides only; profile defaults are identical on Mac and iOS.
++static size_t g_reserve = RESERVE, g_app_pool = DM_GAME_APP_POOL;
++static size_t env_size(const char *name, size_t fallback) {
++    const char *e = getenv(name); if (!e) return fallback;
++    size_t n;
++    if (!dm_mem_parse(e, &n)) die("%s must be a complete positive byte count (decimal or 0x hex)", name);
++    return n;
++}
+ static uint8_t *g_as;              // ASLR region base = the whole block
+ static uint8_t *g_heap; static size_t g_heap_cur, g_heap_cap;
+ // The address range lies entirely within the currently opened (readable and writable) part of the guest heap: such reads need no kernel trap to check, memcpy directly (used where guest memory is read every tick, such as diag.c tk_rd)
+@@ -24,12 +33,20 @@ static uint8_t *g_alias; static size_t g_alias_cap;
+ static _Atomic uint64_t *g_alias_bits;   // alias region page bitmap (alias_pages)
+ static uint8_t *g_stack; static size_t g_stack_cap;
+ // The address lies in the guest address block (every guest thread stack is here: the game's own heap or the stack region); the big-stack entry (hle_bigstack.c) uses it to decide whether to switch stacks
+-int dm_guest_as_contains(uintptr_t a) { uintptr_t b = (uintptr_t)g_as; return g_as && a >= b && a - b < RESERVE; }
++int dm_guest_as_contains(uintptr_t a) { uintptr_t b = (uintptr_t)g_as; return g_as && a >= b && a - b < g_reserve; }
+ 
+ static void *alias_windows_thread(void *arg);
+ static void mem_init(void) {
+     if (g_as) return;
+-    g_as = mmap(NULL, RESERVE, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
++    g_reserve = env_size("DM_MEM_RESERVE", RESERVE);
++    g_app_pool = env_size("DM_MEM_POOL", DM_GAME_APP_POOL);
++    g_alias_cap = env_size("DM_MEM_ALIAS", DM_GAME_MEM_ALIAS);
++    g_stack_cap = DM_GAME_MEM_STACK;
++    size_t heap_offset;
++    if (!dm_mem_layout(g_reserve, g_alias_cap, g_stack_cap, (size_t)getpagesize(), &heap_offset))
++        die("invalid guest layout: reserve=%#zx alias=%#zx stack=%#zx (page-aligned partitions and non-empty heap required)", g_reserve, g_alias_cap, g_stack_cap);
++    if (g_app_pool & 0xfff) die("DM_MEM_POOL must be 4 KB aligned");
++    g_as = mmap(NULL, g_reserve, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+     if (g_as == MAP_FAILED) die("reserve guest AS");
+     // Fixed partition (all inside the reserved block): alias 2.875 GB, stack 256 MB, heap the remaining 1.625 GB.
+     // In newer SDKs the AddressRegionManager always takes 0x3fe00000 (~1 GB) at the start of the alias region as its node area (sdk 0x134728) before handing out regions; with a 512 MB alias region the very first AllocateAddressRegion fails (0x1803).
+@@ -37,11 +54,12 @@ static void mem_init(void) {
+     //   and resource loading then MapPhysicalMemory's into the alias region after the node area on demand. With a 1.25 GB alias region only about 256 MB was left there, and 3 MB-class layout archives (WipeCourseIn / WipeWarp)
+     //   got no address, were skipped, and crashed on a null pointer when used (main +0x373e04). So alias = node area + 1.75 GB + slack; the heap needs only 1.47 GB, and 2.625 GB is plenty.
+     // The alias and stack sizes come from the game profile (mem_alias / mem_stack), the heap takes the rest; Mario: alias 0xB8000000, stack 0x10000000 → stack at +0xC8000000, heap at +0xD8000000
+-    g_alias = g_as + 0x10000000; g_alias_cap = DM_GAME_MEM_ALIAS;
+-    g_stack = g_alias + g_alias_cap; g_stack_cap = DM_GAME_MEM_STACK;
+-    g_heap  = g_stack + g_stack_cap; g_heap_cap  = RESERVE - (size_t)(g_heap - g_as);
++    g_alias = g_as + 0x10000000;
++    g_stack = g_alias + g_alias_cap;
++    g_heap = g_as + heap_offset; g_heap_cap = g_reserve - heap_offset;
+     if (!(g_alias_bits = calloc((g_alias_cap >> 18) + 1, sizeof *g_alias_bits))) die("alias region page bitmap calloc");
+-    LOG("guest AS %p +%#llx  heap %p alias %p stack %p", g_as, (unsigned long long)RESERVE, g_heap, g_alias, g_stack);
++    LOG("guest AS %p +%#llx  heap %p alias %p stack %p", g_as, (unsigned long long)g_reserve, g_heap, g_alias, g_stack);
++    LOG("[mem] layout reserve=%#zx alias=%#zx stack=%#zx heap=%#zx pool=%#zx (explicit environment overrides only)", g_reserve, g_alias_cap, g_stack_cap, g_heap_cap, g_app_pool);
+     const char *aw = getenv("DM_ALIAS_WINDOWS");
+     if (aw && atoi(aw) > 0) { pthread_t th; if (!pthread_create(&th, NULL, alias_windows_thread, (void *)(uintptr_t)atoi(aw))) pthread_detach(th); }
+ }
+@@ -50,7 +68,7 @@ static void mem_init(void) {
+ // and hands the whole block to its own StandardAllocator (main+0x32137a0) -- so heap size = pool − image footprint, it has only as much as the host reports.
+ // Previously 3 GB was reported here and SetHeapSize never failed: the heap was about 150 MB smaller than on the real device, at the run entry peak the main heap had only about 18 MB left, and under high local load a timing shift made a 128 KB request return null,
+ // which the guest writes to without a null check (CRASH main+0x1b36138, re-verified after merge with inv_tap).
+-#define APP_POOL DM_GAME_APP_POOL   // game profile app_pool (Mario 0xCD500000)
++#define APP_POOL g_app_pool   // game profile app_pool (Mario 0xCD500000)
+ static size_t image_bytes(void) { size_t n = 0; for (int i = 0; i < g_nmod; i++) if (!g_mod[i].nro) n += g_mod[i].size;   // an NRO lives in memory the game allocated (its image and bss buffers)
+     return (n + 0x1fffff) & ~(size_t)0x1fffff; }
+ // Giant bss (modules with the patch area before the base, patch_nso.py FAR): the image bytes beyond the file part. Used memory was reported as "heap + 64 MB", where the 64 MB covers ordinary modules' code and data (Mario's two modules are about 74 MB together,
+@@ -59,7 +77,7 @@ static size_t image_bytes(void) { size_t n = 0; for (int i = 0; i < g_nmod; i++)
+ static size_t big_bss_bytes(void) { size_t n = 0; for (int i = 0; i < g_nmod; i++) if (g_mod[i].patch_off < 0) n += g_mod[i].size - g_mod[i].file_image_len; return n; }
+ 
+ // For memory accounting (memstat.m): the range of the whole guest address space block (base = NULL when not initialized)
+-void svc_guest_range(uint8_t **base, size_t *size) { *base = g_as; *size = RESERVE; }
++void svc_guest_range(uint8_t **base, size_t *size) { *base = g_as; *size = g_reserve; }
+ 
+ enum { I_CoreMask=0, I_PriorityMask=1, I_AliasAddr=2, I_AliasSize=3, I_HeapAddr=4, I_HeapSize=5,
+        I_TotalMem=6, I_UsedMem=7, I_DebuggerAttached=8, I_ResourceLimit=9, I_IdleTick=10, I_RandomEntropy=11,
+@@ -137,7 +155,7 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
+     case 0x01: {  // SetHeapSize(out_addr*, size)  → x1 = heap base
+         size_t size = regs[1];
+         if (size > g_heap_cap) { LOG("SetHeapSize OOM: req %#zx > cap %#zx", size, g_heap_cap); regs[0] = 0xD401; return 0; }
+-        if (size + image_bytes() > APP_POOL) {   // exceeds the application memory pool: ResultLimitReached. At startup the game retries in 2 MB decrements until it fits (main+0x1b66184)
++        if (image_bytes() > APP_POOL || size > APP_POOL - image_bytes()) {   // exceeds the application memory pool: ResultLimitReached. At startup the game retries in 2 MB decrements until it fits (main+0x1b66184)
+             // Logged once (Mario's retries would repeat it): a game that sizes its heap as pool − used memory and does not retry stops here when its modules are larger than the used memory reported
+             // (profile mem_used; the NSP script's probe boot reads this line, and sets mem_used when no SetHeapSize succeeds afterwards)
+             static int once; if (!once++) LOG("[mem] SetHeapSize %#zx + modules %#zx > app pool %#llx (used memory reported %#llx + bss %#zx)", size, image_bytes() - big_bss_bytes(),
+@@ -147,6 +165,9 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
+         int rc = 0;
+         if (size > g_heap_cur) rc = mprotect(g_heap + g_heap_cur, size - g_heap_cur, PROT_READ | PROT_WRITE);
+         else if (size < g_heap_cur) rc = mprotect(g_heap + size, g_heap_cur - size, PROT_NONE);
++        if (rc) die("SetHeapSize mprotect failed: req=%#zx errno=%d", size, errno);
++        LOG("[mem] SetHeapSize req=%#zx image=%#zx pool=%#zx heap_region=%#zx total=%#zx used=%#llx", size, image_bytes(), g_app_pool, g_heap_cap, g_app_pool,
++            (unsigned long long)(g_heap_cur + DM_GAME_MEM_USED + big_bss_bytes()));
+         if (g_flag.svc) LOG("SetHeapSize %#zx -> base %p mprotect=%d errno=%d", size, g_heap, rc, errno);
+         else if (size > g_heap_cur) LOG("[mem] heap %.2f GB (heap region %.2f GB)", size / 1073741824.0, g_heap_cap / 1073741824.0);
+         g_heap_cur = size;
+@@ -188,8 +209,8 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
+         pthread_mutex_lock(&g_map_lock);   // the registry branches read g_map; the other branches are cheap, so the lock simply spans the whole chain
+         if (a >= g_heap && a < g_heap + g_heap_cur) { base=(uint64_t)g_heap; size=g_heap_cur; state=5/*Heap*/; perm=3; }
+         else if ((k = map_find(addr, 1))) { base=g_map[k-1].base; size=g_map[k-1].size; state=g_map[k-1].state; perm=3; }
+-        else if (a >= g_as && a < g_as + RESERVE) {   // free: up to the adjacent mapping/heap boundary
+-            uint64_t lo = (uint64_t)g_as, hi = (uint64_t)g_as + RESERVE;
++        else if (a >= g_as && a < g_as + g_reserve) {   // free: up to the adjacent mapping/heap boundary
++            uint64_t lo = (uint64_t)g_as, hi = (uint64_t)g_as + g_reserve;
+             if (a >= g_heap) lo = (uint64_t)g_heap + g_heap_cur;
+             else if (hi > (uint64_t)g_heap) hi = (uint64_t)g_heap;
+             for (int i = 0; i < g_nmap; i++) {
+@@ -283,7 +304,7 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
+         case I_PriorityMask: v = 0; break;
+         case I_AliasAddr: v = (uint64_t)g_alias; break;   case I_AliasSize: v = g_alias_cap; break;
+         case I_HeapAddr:  v = (uint64_t)g_heap;  break;   case I_HeapSize:  v = g_heap_cap;  break;
+-        case I_AslrAddr:  v = (uint64_t)g_as;    break;   case I_AslrSize:  v = RESERVE;     break;
++        case I_AslrAddr:  v = (uint64_t)g_as;    break;   case I_AslrSize:  v = g_reserve;     break;
+         case I_StackAddr: v = (uint64_t)g_stack; break;   case I_StackSize: v = g_stack_cap; break;
+         case I_TotalMem: case I_TotalNonSys: v = APP_POOL; break;
+         case I_UsedMem:  case I_UsedNonSys:  v = g_heap_cur + DM_GAME_MEM_USED + big_bss_bytes();   // profile mem_used, 64 MB unless the game needs more (see mem_used in dm/games/README.md)
+diff --git a/dm/host/tests/Makefile b/dm/host/tests/Makefile
+index 4b46e2d1070aeb44ccc274a2d37b2cb3bbd7c54e..798235fe5aec2daa691b19c8e8fd01c41575b0fc 100644
+--- a/dm/host/tests/Makefile
++++ b/dm/host/tests/Makefile
+@@ -4,7 +4,10 @@ B = build
+ # tests that use the game profile need GAME=<base game title ID> (there is no default game); GINC only expands when used, so tests without the profile build as before
+ GINC = $(if $(strip $(GAME)),-I../gen/$(GAME) -I../../games/$(GAME),$(error GAME is not set: make GAME=<base game title ID>: $(shell python3 ../../games/game.py list | awk -F'\t' '{printf "%s (%s)  ", $$1, $$3}')))
+ GAME_H = ../gen/$(GAME)/game_profile.h
+-run: $(B)/t_touch $(B)/t_gesture $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_pctl $(B)/t_time $(B)/t_shared_font $(B)/t_vorbis $(B)/t_vorbis_divides $(B)/t_hid $(B)/t_haptics $(B)/t_haptics_apple
++run: $(B)/t_language $(B)/t_mem_config $(B)/t_padmap $(B)/t_touch $(B)/t_gesture $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_pctl $(B)/t_time $(B)/t_shared_font $(B)/t_vorbis $(B)/t_vorbis_divides $(B)/t_hid $(B)/t_haptics $(B)/t_haptics_apple
++	$(B)/t_language
++	$(B)/t_mem_config
++	$(B)/t_padmap
+ 	$(B)/t_touch
+ 	$(B)/t_gesture
+ 	$(B)/t_oe 2>/dev/null
+@@ -70,7 +73,7 @@ $(B)/t_haptics_apple: t_haptics_apple.m ../haptics_apple.m ../haptics_apple.h ..
+ $(B)/t_time: t_time.c ../hle_time.c ../hle.h ../dm.h $(GAME_H) | $(B)
+ 	clang -O1 -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_time.c
+ $(B)/t_oe: t_oe.c ../hle_oe.c ../hle.h ../dm.h $(GAME_H) | $(B)
+-	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_oe.c
++	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_oe.c -framework CoreFoundation
+ $(B)/t_condvar: t_condvar.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
+ 	clang -O1 -Wno-unused-function -DDM_TEST_HOOKS -I.. $(GINC) -o $@ t_condvar.c t_condvar_stub.c ../hle_thread.c
+ $(B)/t_condvar_old: t_condvar.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
+@@ -85,3 +88,12 @@ $(B):
+ .PHONY: run tsan
+ tsan: $(B)/t_audio_spsc_tsan
+ 	$(B)/t_audio_spsc_tsan
++
++$(B)/t_padmap: t_padmap.c ../dm_padmap.h ../dm_input.h | $(B)
++	clang -O1 -Wall -Werror -o $@ t_padmap.c
++
++$(B)/t_mem_config: t_mem_config.c ../dm_mem_config.h | $(B)
++	clang -O1 -Wall -Werror -fsanitize=undefined -o $@ t_mem_config.c
++
++$(B)/t_language: t_language.c t_oe.c ../hle_oe.c ../hle.h ../dm.h $(GAME_H) | $(B)
++	clang -O1 -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_language.c -framework CoreFoundation
+diff --git a/dm/host/tests/t_language.c b/dm/host/tests/t_language.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..302fa0d2406958acb4f164e0f0334028c052cc7e
+--- /dev/null
++++ b/dm/host/tests/t_language.c
+@@ -0,0 +1,38 @@
++// Reuse the oe service test's host stubs without running its notification suite twice.
++#define main oe_notification_test_main
++#include "t_oe.c"
++#undef main
++#include <assert.h>
++static void expect_code(const char *want) {
++    uint64_t result = h_oe_GetLang(); char code[8]; memcpy(code, &result, 8);
++    assert(!strcmp(code, want));
++    int region = !strncmp(want, "ja", 2) ? 0 :
++        !strncmp(want, "ko", 2) || !strncmp(want, "zh", 2) ? 4 :
++        !strcmp(want, "en-US") || !strcmp(want, "fr-CA") ||
++        !strcmp(want, "es-419") || !strcmp(want, "pt-BR") ? 1 : 2;
++    assert(h_oe_GetRegion() == region);
++}
++int main(void) {
++#if TARGET_OS_OSX
++    const char *zh[] = {"zh-Hans-CN", "zh-Hant-TW", "ZH_hk", "yue-Hant-HK", "wuu", "hak", "nan", "cmn", "gan", "hsn", "lzh"};
++    for (unsigned i = 0; i < sizeof zh / sizeof *zh; i++) assert(!strcmp(mac_language_tag(zh[i]), "zh-Hans"));
++    assert(!strcmp(mac_language_tag(NULL), "en-US"));
++    assert(!strcmp(mac_language_tag("ja-JP"), "en-US"));
++    assert(!strcmp(mac_language_tag("de-DE"), "en-US"));
++#endif
++    const char *explicit[] = {"ja", "ko", "de", "fr", "fr-CA", "pt-BR", "zh-Hant", "zh-Hans", "en-US", "en-GB", "es-419"};
++    for (unsigned i = 0; i < sizeof explicit / sizeof *explicit; i++) { setenv("DM_LANG", explicit[i], 1); expect_code(explicit[i]); }
++    unsetenv("DM_LANG");
++#if TARGET_OS_OSX
++    expect_code(mac_system_language());
++#else
++    expect_code("en-US");
++#endif
++    setenv("DM_LANG", "", 1);
++#if TARGET_OS_OSX
++    expect_code(mac_system_language());
++#else
++    expect_code("en-US");
++#endif
++    puts("language: legacy tag fallback and verbatim explicit DM_LANG precedence passed");
++}
+diff --git a/dm/host/tests/t_mem_config.c b/dm/host/tests/t_mem_config.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..790d5fd7782691bbbf886cc2f781f9729a2d27e9
+--- /dev/null
++++ b/dm/host/tests/t_mem_config.c
+@@ -0,0 +1,19 @@
++#include <assert.h>
++#include <stdio.h>
++#include "../dm_mem_config.h"
++int main(void) {
++    size_t n = 0, off = 0;
++    assert(dm_mem_parse("4294967296", &n) && n == 0x100000000ull);
++    assert(dm_mem_parse("0x140000000", &n) && n == 0x140000000ull);
++    const char *bad[] = {"", "0", "-1", "+1", " 42", "42 ", "42junk", "0x", "08", "18446744073709551616", "18446744073709551615", "9223372036854775808"};
++    for (unsigned i = 0; i < sizeof bad / sizeof *bad; i++) assert(!dm_mem_parse(bad[i], &n));
++    assert(dm_mem_layout(0x100000000ull, 0x10000000, 0x10000000, 0x4000, &off) && off == 0x30000000);
++    assert(dm_mem_layout(0x140000000ull, 0x118000000ull, 0x10000000, 0x4000, &off));
++    assert(!dm_mem_layout(0x10000000, 0x10000000, 0x10000000, 0x4000, &off));
++    assert(!dm_mem_layout(0x30000000, 0x10000000, 0x10000000, 0x4000, &off));
++    assert(!dm_mem_layout(0x100000000ull, SIZE_MAX, 0x10000000, 0x4000, &off));
++    assert(!dm_mem_layout(0x100000000ull, 0x10000001, 0x10000000, 0x4000, &off));
++    assert(!dm_mem_layout(0x100000000ull, 0x10000000, SIZE_MAX, 0x4000, &off));
++    assert(!dm_mem_layout(SIZE_MAX, 0x10000000, 0x10000000, 0x4000, &off));
++    puts("memory config: complete parsing, overflow, alignment and layout underflow checks passed");
++}
+diff --git a/dm/host/tests/t_padmap.c b/dm/host/tests/t_padmap.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..6c9245f1cf3e428d7b3cdb6d79f57e80aa58eddc
+--- /dev/null
++++ b/dm/host/tests/t_padmap.c
+@@ -0,0 +1,21 @@
++#include <assert.h>
++#include <stdio.h>
++#include "../dm_padmap.h"
++int main(void) {
++    assert(dm_padmap_kind("Switch Pro Controller", "Pro Controller") == DM_PADKIND_NINTENDO);
++    assert(dm_padmap_kind(NULL, "NINTENDO") == DM_PADKIND_NINTENDO);
++    assert(dm_padmap_kind("Joy-Con (L/R)", NULL) == DM_PADKIND_NINTENDO);
++    assert(dm_padmap_kind(NULL, NULL) == DM_PADKIND_XBOX);
++    assert(dm_padmap_kind("DualSense", "Sony") == DM_PADKIND_XBOX);
++    assert(dm_padmap_select("XBOX", "Switch Pro Controller", "Nintendo") == DM_PADKIND_XBOX);
++    assert(dm_padmap_select("Nintendo", "Xbox", "Microsoft") == DM_PADKIND_NINTENDO);
++    assert(dm_padmap_select("auto", "Switch", NULL) == DM_PADKIND_NINTENDO);
++    for (int bits = 0; bits < 16; bits++) {
++        int south = bits & 1, east = bits & 2, west = bits & 4, north = bits & 8;
++        uint64_t xbox = (south ? DM_BTN_A : 0) | (east ? DM_BTN_B : 0) | (west ? DM_BTN_X : 0) | (north ? DM_BTN_Y : 0);
++        uint64_t nintendo = (east ? DM_BTN_A : 0) | (south ? DM_BTN_B : 0) | (north ? DM_BTN_X : 0) | (west ? DM_BTN_Y : 0);
++        assert(dm_padmap_face(DM_PADKIND_XBOX, south, east, west, north) == xbox);
++        assert(dm_padmap_face(DM_PADKIND_NINTENDO, south, east, west, north) == nintendo);
++    }
++    puts("padmap: vendor detection, explicit overrides and 32 face combinations passed");
++}
+diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
+index c3ac8c16227b5920aec02884f6fc42d173b0b09c..5bde828ab249c6b4f59ac946815d3cd3338ae6c3 100644
+--- a/dm/ios/Sources/DmGamepad.m
++++ b/dm/ios/Sources/DmGamepad.m
+@@ -10,7 +10,7 @@
+ //     then in 3D the right stick for a touch in the right third.
+ //   Everything hugs the edges and corners to leave the picture room; controls sit over the picture, one CAShapeLayer each: a press only swaps the fill, a stick only moves its knob, nothing redraws the whole screen.
+ //   Touches no control takes (in 3D, those outside the right third) go to the game's touch screen (pushGame; Super Mario Galaxy's pointer in handheld mode).
+-//   The virtual gamepad (layout button included) hides while a physical controller is connected and comes back when it is removed; meanwhile every touch goes to the game. Physical controllers keep every button (D-pad and right stick included) and map by position: bottom = B, right = A, left = Y, top = X (same positions as on a Switch controller).
++//   The virtual gamepad (layout button included) hides while a physical controller is connected and comes back when it is removed; meanwhile every touch goes to the game. Physical controllers keep every button (D-pad and right stick included) and use the shared glyph mapping (DM_PADMAP overrides vendor detection).
+ //   Shaking the phone shakes the controller (DM_BTN_SHAKE: its six-axis sensor, hle_hid.c), whichever controls are in use; see "Shaking the phone" below.
+ #import <UIKit/UIKit.h>
+ #import <GameController/GameController.h>
+@@ -19,6 +19,7 @@
+ #include <pthread.h>
+ #include "dm.h"
+ #include "dm_input.h"
++#include "dm_padmap.h"
+ #include "front.h"
+ #include "game_profile.h"
+ #include "haptics_apple.h"
+@@ -416,15 +417,29 @@ - (void)refresh {   // pressed state → fill, sticks → knob position
+ 
+ // ---- Physical controllers ----
+ static int32_t axis(float v) { return (int32_t)(fmaxf(-1.f, fminf(1.f, v)) * 32767); }
+-static void read_pad(GCExtendedGamepad *g) {
++
++// The face buttons of a physical controller: the system gives the four of them by position
++// (buttonA bottom, buttonB right, buttonX left, buttonY top), not by the letter printed on the button,
++// so a Nintendo pad (Switch Pro, Joy-Con: A right / B bottom / X top / Y left) and an Xbox-layout pad
++// (PS5, Xbox: A bottom / B right / X left / Y top) need different letters for the game.
++// dm_padmap.h (shared with the Mac host) tells the two layouts apart by the product category / vendor
++// name. DM_PADMAP=nintendo|xbox forces the layout when the automatic detection gets it wrong
++// (the system does not always fill in the category on iOS).
++static int pad_kind(GCController *c) {
++    return dm_padmap_select(getenv("DM_PADMAP"), c.productCategory.UTF8String, c.vendorName.UTF8String);
++}
++
++static void read_pad(GCExtendedGamepad *g, int kind) {
+     dm_haptics_apple_controller(0, g.controller);
+     uint64_t m = 0;
+-    #define K(btn, bit) if (btn.isPressed) m |= 1ull << bit
+-    K(g.buttonB, B_A); K(g.buttonA, B_B); K(g.buttonY, B_X); K(g.buttonX, B_Y);   // by position: right A, bottom B, top X, left Y
+-    K(g.leftShoulder, B_L); K(g.rightShoulder, B_R); K(g.leftTrigger, B_ZL); K(g.rightTrigger, B_ZR);
+-    K(g.buttonMenu, B_PLUS); if (g.buttonOptions) K(g.buttonOptions, B_MINUS);
+-    if (g.leftThumbstickButton) K(g.leftThumbstickButton, B_LS); if (g.rightThumbstickButton) K(g.rightThumbstickButton, B_RS);
+-    K(g.dpad.left, B_LEFT); K(g.dpad.up, B_UP); K(g.dpad.right, B_RIGHT); K(g.dpad.down, B_DOWN);
++    // by the glyph: a Nintendo pad has A right / B bottom / X top / Y left, an Xbox pad A bottom / B right / X left / Y top
++    m |= dm_padmap_face(kind, g.buttonA.isPressed, g.buttonB.isPressed, g.buttonX.isPressed, g.buttonY.isPressed);
++    #define K(btn, bit) if (btn.isPressed) m |= (bit)   // the DM_BTN_* values are masks, not bit indexes
++    K(g.leftShoulder, DM_BTN_L); K(g.rightShoulder, DM_BTN_R);
++    K(g.leftTrigger, DM_BTN_ZL); K(g.rightTrigger, DM_BTN_ZR);
++    K(g.buttonMenu, DM_BTN_PLUS); if (g.buttonOptions) K(g.buttonOptions, DM_BTN_MINUS);
++    if (g.leftThumbstickButton) K(g.leftThumbstickButton, DM_BTN_LS); if (g.rightThumbstickButton) K(g.rightThumbstickButton, DM_BTN_RS);
++    K(g.dpad.left, DM_BTN_LEFT); K(g.dpad.up, DM_BTN_UP); K(g.dpad.right, DM_BTN_RIGHT); K(g.dpad.down, DM_BTN_DOWN);
+     #undef K
+     pthread_mutex_lock(&g_mu);
+     g_pad_btn = m; g_pad_lx = axis(g.leftThumbstick.xAxis.value); g_pad_ly = axis(g.leftThumbstick.yAxis.value);
+@@ -435,8 +450,12 @@ static void read_pad(GCExtendedGamepad *g) {
+ - (void)padsChanged {
+     BOOL any = NO;
+     for (GCController *c in GCController.controllers) if (c.extendedGamepad) {
+-        any = YES; c.extendedGamepad.valueChangedHandler = ^(GCExtendedGamepad *g, GCControllerElement *el) { (void)el; read_pad(g); };
+-        read_pad(c.extendedGamepad);
++        any = YES;
++        int kind = pad_kind(c);
++        c.extendedGamepad.valueChangedHandler = ^(GCExtendedGamepad *g, GCControllerElement *el) { (void)el; read_pad(g, kind); };
++        read_pad(c.extendedGamepad, kind);
++        LOG("[gamepad] controller: vendor '%s', category '%s' -> %s layout", c.vendorName.UTF8String ?: "?", c.productCategory.UTF8String ?: "?",
++            kind == DM_PADKIND_NINTENDO ? "Nintendo (A right / B bottom / X top / Y left)" : "Xbox (A bottom / B right / X left / Y top)");
+     }
+     if (!any) { dm_haptics_apple_controller(0, nil); pthread_mutex_lock(&g_mu); g_pad_btn = 0; g_pad_lx = g_pad_ly = g_pad_rx = g_pad_ry = 0; pthread_mutex_unlock(&g_mu); publish(); }
+     dispatch_async(dispatch_get_main_queue(), ^{ self->_padOff = any; self->_controls.hidden = any; [self reset]; });

@@ -22,7 +22,7 @@
 #   --name        the bundle name (default: the profile's ipa base name, e.g. "BotW Native")
 #   --display     the name in the menu bar and the window title (default: the profile's name)
 #   --bundle-id   the bundle identifier (default: org.nxnative.<title id in lowercase>.mac)
-#   --dlc         a folder holding the add-on content: <index>/RomFS per DLC (optional)
+#   --dlc         extracted add-on content: <index>/ files or <index>/RomFS/ (optional)
 #   --support     the Application Support folder (default: nxnative/<title id> — a fixed per-game home
 #                 that survives renaming the .app); saves and log.txt live there
 #   --mem-pool    the memory the game is told it has (default: the profile's app_pool)
@@ -33,7 +33,15 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/.." && pwd)
 REPO=$ROOT/nxnative
 GAME=""; WORK=""; VER=""; OUT=""; NAME=""; DISPLAY=""; BUNDLE_ID=""; DLC=""; SUPPORT=""
-MEM_POOL=""; MEM_RESERVE=""; PY=""
+MEM_POOL=""; MEM_RESERVE=""; PY=""; GRAPHICS_API=${GFXAPI:-auto}
+
+clone_tree() {
+  # cp may leave a partial destination when clonefile is unsupported.
+  if ! cp -cR "$1" "$2" 2>/dev/null; then
+    rm -rf "$2"
+    cp -R "$1" "$2"
+  fi
+}
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 while [ $# -gt 0 ]; do
@@ -51,13 +59,15 @@ while [ $# -gt 0 ]; do
     --mem-reserve) MEM_RESERVE=$2; shift 2;;
     --repo) REPO=$2; shift 2;;
     --python) PY=$2; shift 2;;
+    --graphics-api) GRAPHICS_API=$2; shift 2;;
     -h|--help) sed -n '2,30p' "$0"; exit 0;;
     *) fail "unknown option $1";;
   esac
 done
 [ -n "$GAME" ] && [ -n "$WORK" ] && [ -n "$VER" ] && [ -n "$OUT" ] || fail "--game, --work, --ver and --out are required"
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-export DM_GAMES_DIR="${DM_GAMES_DIR:+$DM_GAMES_DIR:}$WORK/profile"
+export DM_GAMES_DIR="$WORK/profile${DM_GAMES_DIR:+:$DM_GAMES_DIR}"
+if [ -f "$WORK/profile/$GAME/game.tsv" ]; then export DM_GAMES_FIRST=1; fi
 PROF=$(python3 "$REPO/dm/games/game.py" dir "$GAME") || fail "no profile for $GAME (including $WORK/profile)"
 [ -f "$PROF/game.tsv" ] || fail "no profile at $PROF/game.tsv"
 
@@ -65,7 +75,7 @@ PROF=$(python3 "$REPO/dm/games/game.py" dir "$GAME") || fail "no profile for $GA
 # NXLAUNCHER_PYTHON is the launcher's own Python (the app carries one); its packages are on the
 # PYTHONPATH, so the check below sees the Pillow there.
 if [ -z "$PY" ]; then
-  for c in "${NXLAUNCHER_PYTHON:-}" /Users/guxiu/Library/miniforge3/bin/python3 python3 /opt/homebrew/bin/python3; do
+  for c in "${NXLAUNCHER_PYTHON:-}" "$ROOT/.venv/bin/python3" "$(command -v python3 || true)" /opt/homebrew/bin/python3; do
     [ -n "$c" ] || continue
     if [ -x "$c" ] && "$c" -c "import PIL" >/dev/null 2>&1; then PY="$c"; break; fi
   done
@@ -91,9 +101,18 @@ if [ -z "$SUPPORT" ] && [ -n "$GAME" ]; then SUPPORT="nxnative/$GAME"; fi
 SUPPORT=${SUPPORT:-$NAME}
 MEM_POOL=${MEM_POOL:-$(prof app_pool)}
 MEM_RESERVE=${MEM_RESERVE:-$(prof mem_reserve)}
-CHAIN=$(sed -n 's/^#define DMSH_CHAIN "\(.*\)"/\1/p' "$PROF/dmsh_chain.h")
-[ -n "$CHAIN" ] || fail "the profile has no DMSH_CHAIN (dmsh_chain.h)"
+SHADER_LIBRARY=$("$PY" "$HERE/shader_chain.py" --repo "$REPO" --profile "$PROF" --game "$GAME" \
+  --resources --work "$WORK" --target mac --graphics-api "$GRAPHICS_API") || fail "shader cache is not compatible with the host and profile"
+SHADER_NAME=$(basename "$SHADER_LIBRARY")
+MIN_MACOS=11.0
+case "$SHADER_NAME" in b-*) MIN_MACOS=26.0;; esac
 
+[ ! -e "$OUT" ] || fail "output already exists: $OUT"
+mkdir -p "$(dirname "$OUT")"
+FINAL_OUT=$OUT
+STAGING=$(mktemp -d "$(dirname "$OUT")/.nxlauncher-export.XXXXXX")
+trap 'rm -rf "$STAGING"' EXIT INT TERM
+OUT="$STAGING/$(basename "$FINAL_OUT")"
 RES="$OUT/Contents/Resources"
 echo "=== packaging the Mac .app ==="
 echo "game   : $GAME ($GAME_NAME $GAME_VERSION)"
@@ -105,11 +124,16 @@ mkdir -p "$OUT/Contents/MacOS" "$RES/dm" "$RES/font" "$RES/msl"
 
 # --- the host ---
 echo "[1] the Mac host ..."
-( cd "$REPO/dm/host" && make -s GAME="$GAME" dmhost ) || { echo "FAIL: the host did not build"; exit 1; }
+if [ -f "$WORK/.nxlauncher/dmhost" ]; then
+  HOST="$WORK/.nxlauncher/dmhost"
+else
+  ( cd "$REPO/dm/host" && make -s GAME="$GAME" dmhost ) || fail "the host did not build"
+  HOST="$REPO/dm/host/dmhost"
+fi
 # In Contents/MacOS, next to the launcher: after the launcher's exec the process is still inside the bundle, so
 # macOS resolves the bundle for it and the window and the Dock entry show the app's own icon. A host outside
 # Contents/MacOS would be a bare executable and macOS would show the generic "exec" icon instead.
-cp "$REPO/dm/host/dmhost" "$OUT/Contents/MacOS/dmhost"
+cp "$HOST" "$OUT/Contents/MacOS/dmhost"
 chmod +x "$OUT/Contents/MacOS/dmhost"
 echo "    $(ls -la "$OUT/Contents/MacOS/dmhost" | awk '{print $5}') bytes"
 
@@ -127,39 +151,24 @@ done
 
 # --- the macOS shader libraries ---
 echo "[4] the macOS shader libraries (APFS clone) ..."
-[ -d "$WORK/shader/cache/b-$CHAIN" ] || fail "no $WORK/shader/cache/b-$CHAIN (the shader stage did not run)"
-cp -cR "$WORK/shader/cache/b-$CHAIN" "$RES/msl/b-$CHAIN"
+clone_tree "$SHADER_LIBRARY" "$RES/msl/$SHADER_NAME"
 echo "    $(find "$RES/msl" -name '*.metallib' | wc -l | tr -d ' ') metallibs"
 
 # --- the game files ---
 echo "[5] the game files (APFS clone) ..."
-[ -d "$WORK/extract/$VER/RomFS" ] || fail "no $WORK/extract/$VER/RomFS (the extract stage did not run)"
-cp -cR "$WORK/extract/$VER/RomFS" "$RES/romfs"
-echo "    $(find "$RES/romfs" -type f | wc -l | tr -d ' ') files"
-
-# --- the shared-font stand-ins ---
-# They are made when the iOS app is built (build_ipa.sh): the standard font is the system's Arial
-# Unicode, the extended one the upstream's script makes. A Mac-only export has no iOS build, so
-# they are made here when they are missing.
-echo "[6] the fonts ..."
-FONT_DIR="$REPO/dm/ios/Gen/dm/font"
-if [ ! -f "$FONT_DIR/standard.ttf" ] || [ ! -f "$FONT_DIR/nintendo_ext.ttf" ]; then
-    echo "    (making them)"
-    mkdir -p "$FONT_DIR" 2>/dev/null || true
-    if [ ! -f "$FONT_DIR/standard.ttf" ]; then
-        cp "${STD_FONT:-/System/Library/Fonts/Supplemental/Arial Unicode.ttf}" "$FONT_DIR/standard.ttf" 2>/dev/null \
-            || echo "    (no standard font: the system's Arial Unicode)"
-    fi
-    if [ ! -f "$FONT_DIR/nintendo_ext.ttf" ]; then
-        "$PY" "$REPO/dm/tools/make_ext_font.py" "$FONT_DIR/nintendo_ext.ttf" >/dev/null 2>&1 \
-            || echo "    (the extended font could not be made: it needs fontTools)"
-    fi
-fi
-if [ -f "$FONT_DIR/standard.ttf" ] && [ -f "$FONT_DIR/nintendo_ext.ttf" ]; then
-  cp "$FONT_DIR/standard.ttf" "$FONT_DIR/nintendo_ext.ttf" "$RES/font/"
+if [ -f "$WORK/extract/$VER/RomFS.img" ]; then
+  clone_tree "$WORK/extract/$VER/RomFS.img" "$RES/romfs.img"
 else
-  echo "    (no fonts at $FONT_DIR -- the game may show no text)"
+  [ -d "$WORK/extract/$VER/RomFS" ] || fail "no $WORK/extract/$VER/RomFS (the extract stage did not run)"
+  clone_tree "$WORK/extract/$VER/RomFS" "$RES/romfs"
 fi
+
+# Always use the license-aware helper; never reuse old Gen system-font copies.
+echo "[6] the fonts ..."
+FONT_HELPER=${NXLAUNCHER_FONT_HELPER:-$ROOT/Scripts/font-policy.py}
+[ -f "$FONT_HELPER" ] || fail "font policy helper missing: $FONT_HELPER"
+"$PY" "$FONT_HELPER" --repo "$REPO" --out "$RES/font" || fail "font policy preparation failed"
+[ -s "$RES/font/standard.ttf" ] && [ -s "$RES/font/nintendo_ext.ttf" ] || fail "font helper produced incomplete fonts"
 
 # --- the icon (the game's own icon.jpg, written as .icns by make-icns.py) ---
 echo "[7] the icon ..."
@@ -177,10 +186,13 @@ fi
 echo "[8] the add-on content ..."
 if [ -n "$DLC" ] && [ -d "$DLC" ]; then
   for d in "$DLC"/*/; do
+    [ -d "$d" ] || continue
     idx=$(basename "$d")
-    [ -d "$d/RomFS" ] || continue
+    case "$idx" in ''|*[!0-9]*) continue;; esac
+    src=${d%/}
+    [ ! -d "$d/RomFS" ] || src="$d/RomFS"
     mkdir -p "$RES/aoc"
-    cp -cR "$d/RomFS" "$RES/aoc/$idx"
+    clone_tree "$src" "$RES/aoc/$idx"
     echo "    aoc/$idx: $(find "$RES/aoc/$idx" -type f | wc -l | tr -d ' ') files"
   done
 else
@@ -196,11 +208,19 @@ chmod +x "$OUT/Contents/MacOS/BotW"
 file "$OUT/Contents/MacOS/BotW" | sed 's/^/    /'
 
 # --- Info.plist ---
-"$PY" "$HERE/make-info-plist.py" "$OUT/Contents/Info.plist" "$NAME" "$DISPLAY" "$BUNDLE_ID" "$GAME_VERSION" "26.0" || exit 1
+"$PY" "$HERE/make-info-plist.py" "$OUT/Contents/Info.plist" "$NAME" "$DISPLAY" "$BUNDLE_ID" "$GAME_VERSION" "$MIN_MACOS" || exit 1
 plutil -lint "$OUT/Contents/Info.plist" >/dev/null || { echo "FAIL: the Info.plist is not well-formed"; exit 1; }
 
-# A bundle whose executable is a script cannot be code-signed, and a locally built bundle carries no
-# quarantine attribute, so it opens as it is (no Gatekeeper prompt).
+# Sign the nested host before sealing the complete bundle and its resources.
+echo "[10] signing the app ..."
+codesign --force --sign - "$OUT/Contents/MacOS/dmhost" || fail "the Mac host could not be signed"
+codesign --force --sign - "$OUT" || fail "the app could not be signed"
+codesign --verify --deep --strict "$OUT" || fail "the app signature is not valid"
+
+# Rename on the destination volume only after validation and signing succeeds.
+[ ! -e "$FINAL_OUT" ] || fail "output appeared during export: $FINAL_OUT"
+mv "$OUT" "$FINAL_OUT"
+OUT=$FINAL_OUT
 
 echo
 echo "=== the app ==="

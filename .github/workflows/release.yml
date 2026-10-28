@@ -1,0 +1,306 @@
+name: Release macOS preview
+
+'on':
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag (vMAJOR.MINOR.PATCH)'
+        required: true
+        type: string
+      source_sha:
+        description: 'Full commit SHA the existing tag must resolve to'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # Standard public-repository Apple Silicon runner; macos-15-intel is a different image.
+    runs-on: macos-15
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      DEVELOPER_ID: '-'
+      CODESIGN_TIMESTAMP: none
+      PYTHONDONTWRITEBYTECODE: '1'
+      PBS_BUILD: '20260807'
+      PBS_ASSET: cpython-3.13.15+20260807-aarch64-apple-darwin-install_only.tar.gz
+      PBS_SHA256: ebcf53fe921c356ad2eecfcea370cb744e7bd96fdef41a53e1e8f32a15c6dfeb
+    outputs:
+      tag: ${{ steps.source.outputs.tag }}
+      sha: ${{ steps.source.outputs.sha }}
+      version: ${{ steps.source.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          submodules: recursive
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify tag, source SHA, version and build host
+        id: source
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          EXPECTED_SHA: ${{ inputs.source_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          sha=$(git rev-parse HEAD)
+          test "$sha" = "$EXPECTED_SHA"
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$sha"
+          version=$(tr -d '\n' < VERSION)
+          test "$RELEASE_TAG" = "v$version"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          printf 'tag=%s\nsha=%s\nversion=%s\n' "$RELEASE_TAG" "$sha" "$version" >> "$GITHUB_OUTPUT"
+          # Build checkout must remain the exact tag; no pre-existing binaries/payload cache.
+          test ! -e dist/NxLauncher.app
+          test ! -e dist/nxlauncher-home.tgz
+          swift --version
+          xcodebuild -version
+
+      - name: Install digest-pinned standalone Python
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/$PBS_ASSET"
+          curl --fail --location --retry 3 \
+            "https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_BUILD/$PBS_ASSET" \
+            --output "$archive"
+          printf '%s  %s\n' "$PBS_SHA256" "$archive" | shasum -a 256 --check
+          stage=$(mktemp -d "$RUNNER_TEMP/pbs.XXXXXX")
+          tar -xzf "$archive" -C "$stage"
+          # The reviewed upstream install_only archive has no BUILD marker. Write it
+          # only after verifying the complete archive against the pinned digest.
+          printf '%s\n' "$PBS_BUILD" > "$stage/python/BUILD"
+          # Also satisfy older make-home-archive.sh's documented uv discovery contract.
+          # All locations are derived from HOME/RUNNER_TEMP, never a user/runner prefix.
+          python_root="$HOME/.local/share/uv/python/cpython-3.13.15-macos-aarch64-none"
+          mkdir -p "$(dirname "$python_root")"
+          test ! -e "$python_root"
+          mv "$stage/python" "$python_root"
+          "$python_root/bin/python3" -I -c \
+            'import platform,sys; assert sys.version_info[:3] == (3,13,15); assert sys.platform == "darwin"; assert platform.machine() == "arm64"'
+          printf '%s\n' "$python_root/bin" >> "$GITHUB_PATH"
+          printf 'NXLAUNCHER_PYTHON_ROOT=%s\n' "$python_root" >> "$GITHUB_ENV"
+
+      - name: Prepare and verify exact upstream patch series
+        run: |
+          set -euo pipefail
+          python3 Tools/prepare-nxnative.py
+          python3 Tools/prepare-nxnative.py --check
+          export_root="$RUNNER_TEMP/verified-nxnative"
+          python3 Tools/prepare-nxnative.py --check --export "$export_root"
+          # Dependencies for tests live outside the Python installation we bundle.
+          python3 -m venv "$RUNNER_TEMP/test-venv"
+          "$RUNNER_TEMP/test-venv/bin/python3" -m pip install --no-index \
+            --find-links Resources/wheels lz4 capstone fonttools pillow backports.zstd
+
+      - name: Run all launcher Python tests and standalone Swift harnesses
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/test-venv/bin/python3" -m unittest discover -s Tests -v
+          common=(Sources/NxLauncher/GameLibrary.swift Sources/NxLauncher/LauncherState.swift
+                  Sources/NxLauncher/Plan.swift Sources/NxLauncher/Pipeline.swift
+                  Sources/NxLauncher/LauncherIdentity.swift)
+          for harness in GameLibraryTests SwiftSafetyTests; do
+            swiftc -swift-version 5 "${common[@]}" "Tests/$harness.swift" -o "$RUNNER_TEMP/$harness"
+            "$RUNNER_TEMP/$harness"
+          done
+          swiftc -swift-version 5 Sources/NxLauncher/Plan.swift Sources/NxLauncher/Pipeline.swift \
+            Tests/PipelineFailureTests.swift -o "$RUNNER_TEMP/PipelineFailureTests"
+          "$RUNNER_TEMP/PipelineFailureTests"
+          swiftc -swift-version 5 Sources/NxLauncher/BuildLogView.swift \
+            Tests/BuildLogViewTests.swift -o "$RUNNER_TEMP/BuildLogViewTests"
+          "$RUNNER_TEMP/BuildLogViewTests"
+
+      - name: Build actual ad-hoc app ZIP with the release script
+        env:
+          VERSION: ${{ steps.source.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/release-assets"
+          bash Scripts/make-release.sh \
+            "$RUNNER_TEMP/release-assets/NxLauncher-$VERSION-macos-arm64.zip" \
+            --identity - --python "$NXLAUNCHER_PYTHON_ROOT"
+
+      - name: Verify final archive, signatures, audits and provenance
+        env:
+          RELEASE_TAG: ${{ steps.source.outputs.tag }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          VERSION: ${{ steps.source.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, importlib.util, json, os, pathlib, plistlib, posixpath, stat, subprocess, tarfile, zipfile
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'release-assets'
+          version = os.environ['VERSION']
+          archive = root / f'NxLauncher-{version}-macos-arm64.zip'
+          manifest_path = pathlib.Path(str(archive) + '.manifest.json')
+          checksum = pathlib.Path(str(archive) + '.sha256')
+          assert {p.name for p in root.iterdir()} == {archive.name, manifest_path.name, checksum.name}
+          manifest = json.loads(manifest_path.read_text())
+          digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+          assert checksum.read_text().split()[0] == digest
+          assert manifest['version'] == version and manifest['architecture'] == 'arm64'
+          assert manifest['archive']['path'] == archive.name
+          assert manifest['archive']['sha256'] == digest
+          assert manifest['archive']['size'] == archive.stat().st_size
+          assert manifest['signing_identity'] == '-'
+          assert manifest['notarized'] is False and manifest['stapled'] is False
+          assert manifest['app_audit']['ok'] is True and manifest['app_audit']['findings'] == []
+          spec = importlib.util.spec_from_file_location('release_audit', 'Tools/release-audit.py')
+          audit = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(audit)
+          findings = []
+          with zipfile.ZipFile(archive) as z:
+              seen = set()
+              for member in z.infolist():
+                  name = member.filename
+                  assert audit.safe_name(name), name
+                  assert name not in seen, name
+                  seen.add(name)
+                  assert name.split('/')[0] in ('NxLauncher.app', '__MACOSX'), name
+                  assert member.file_size <= audit.MAX_MEMBER, name
+                  if stat.S_ISLNK(member.external_attr >> 16):
+                      link = z.read(member).decode()
+                      target = posixpath.normpath(posixpath.join(posixpath.dirname(name), link))
+                      assert not link.startswith('/') and target.startswith('NxLauncher.app/'), name
+                  if not member.is_dir():
+                      audit.inspect_bytes(name, z.read(member), findings)
+          assert not findings, findings
+          extracted = pathlib.Path(os.environ['RUNNER_TEMP']) / 'verified-release'
+          extracted.mkdir()
+          subprocess.run(['ditto', '-x', '-k', str(archive), str(extracted)], check=True)
+          app = extracted / 'NxLauncher.app'
+          subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
+          signature = subprocess.run(['codesign', '-d', '--verbose=4', str(app)],
+                                     check=True, capture_output=True, text=True).stderr
+          assert 'Signature=adhoc' in signature and 'Authority=Developer ID' not in signature
+          plist = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+          assert plist['CFBundleShortVersionString'] == version and plist['CFBundleVersion'] == version
+          arch = subprocess.check_output(['lipo', '-archs', str(app / 'Contents/MacOS/NxLauncher')], text=True)
+          assert arch.strip() == 'arm64', arch
+          problems, _ = audit.audit(app, 'app')
+          assert not problems, problems
+          payload_root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'verified-payload'
+          payload_root.mkdir()
+          with tarfile.open(app / 'Contents/Resources/nxlauncher-home.tgz', 'r:gz') as payload:
+              payload.extractall(payload_root, filter='data')
+          problems, entries = audit.audit(payload_root, 'payload')
+          assert not problems, problems
+          payload_audit_sha256 = hashlib.sha256(
+              json.dumps(entries, sort_keys=True).encode()).hexdigest()
+          # Keep checksums portable, without changing any signed ZIP bytes.
+          checksum.write_text(f'{digest}  {archive.name}\n')
+          provenance = {
+              'tag': os.environ['RELEASE_TAG'], 'source_sha': os.environ['SOURCE_SHA'],
+              'version': version, 'architecture': 'arm64', 'signing': 'ad-hoc',
+              'notarized': False, 'stapled': False,
+              'payload_audit': {'ok': True, 'files': len(entries), 'inventory_sha256': payload_audit_sha256},
+              'upstream_commit': pathlib.Path('patches/base-commit').read_text().strip(),
+              'patch_series_sha256': hashlib.sha256(pathlib.Path('patches/series').read_bytes()).hexdigest(),
+              'patches': [{'path': name, 'sha256': hashlib.sha256((pathlib.Path('patches') / name).read_bytes()).hexdigest()}
+                          for line in pathlib.Path('patches/series').read_text().splitlines()
+                          if (name := line.strip()) and not name.startswith('#')],
+              'python': {'build': os.environ['PBS_BUILD'], 'asset': os.environ['PBS_ASSET'],
+                         'archive_sha256': os.environ['PBS_SHA256']},
+              'workflow_run': f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              'files': [{'path': p.name, 'size': p.stat().st_size,
+                         'sha256': hashlib.sha256(p.read_bytes()).hexdigest()} for p in sorted(root.iterdir())]
+          }
+          (root / 'release-provenance.json').write_text(json.dumps(provenance, indent=2) + '\n')
+          PY
+          (cd "$RUNNER_TEMP/release-assets" && shasum -a 256 --check ./*.sha256)
+          python3 Tools/prepare-nxnative.py --check
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          # The patch worktree is expected to be dirty; top-level tracked source must not change.
+          git diff --exit-code --ignore-submodules=all
+          git diff --cached --exit-code
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ steps.source.outputs.tag }}-${{ steps.source.outputs.sha }}
+          path: ${{ runner.temp }}/release-assets/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.build.outputs.tag }}
+      SOURCE_SHA: ${{ needs.build.outputs.sha }}
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-${{ needs.build.outputs.tag }}-${{ needs.build.outputs.sha }}
+          path: release-assets
+      - name: Recheck source and downloaded asset hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$SOURCE_SHA"
+          test "$RELEASE_TAG" = "v$(tr -d '\n' < VERSION)"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
+          root = pathlib.Path('release-assets')
+          proof = json.loads((root / 'release-provenance.json').read_text())
+          assert proof['source_sha'] == os.environ['SOURCE_SHA'] and proof['tag'] == os.environ['RELEASE_TAG']
+          assert proof['signing'] == 'ad-hoc' and proof['notarized'] is False
+          base = f"NxLauncher-{os.environ['VERSION']}-macos-arm64.zip"
+          expected = {base, base + '.sha256', base + '.manifest.json'}
+          assert {f['path'] for f in proof['files']} == expected
+          assert {p.name for p in root.iterdir()} == expected | {'release-provenance.json'}
+          for item in proof['files']:
+              path = root / item['path']
+              assert path.is_file() and not path.is_symlink()
+              assert path.stat().st_size == item['size']
+              assert hashlib.sha256(path.read_bytes()).hexdigest() == item['sha256']
+          PY
+          (cd release-assets && sha256sum --check ./*.sha256)
+
+      - name: Create actual GitHub prerelease with audited assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          # --verify-tag forbids gh from silently creating a tag at the default branch.
+          # Creating once (no upload --clobber) preserves manually signed existing releases.
+          cat > "$RUNNER_TEMP/release-notes.txt" <<EOF
+          macOS Apple Silicon preview built from tag $RELEASE_TAG, source commit $SOURCE_SHA.
+
+          Signing: ad-hoc only. Not Developer ID signed. Not notarized; not stapled.
+          Gatekeeper may block this preview. No Apple credentials or signing secrets were used.
+
+          Python and Swift fixture tests, pinned upstream patch preparation, the release build,
+          code-signature verification and final archive/payload scans passed before publication.
+          No games, keys or saves are included. Game compatibility is not established by CI.
+          Check the ZIP SHA-256 and release-provenance.json for source and dependency provenance.
+          EOF
+          gh release create "$RELEASE_TAG" release-assets/* \
+            --verify-tag --target "$SOURCE_SHA" --prerelease --latest=false \
+            --title "NxLauncher $VERSION — ad-hoc macOS preview (not notarized)" \
+            --notes-file "$RUNNER_TEMP/release-notes.txt"

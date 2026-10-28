@@ -48,6 +48,14 @@ struct Plan: Decodable {
     var icon: String = ""
     var fpsTarget: String = ""
     var notes: [String] = []
+    var target: String? = nil
+    var builtTargets: [String: Bool]? = nil
+    var buildStatus: String? = nil
+    var profileID: String? = nil
+    var graphicsAPI: String? = nil
+    var shaderWarnings: [String]? = nil
+
+    func isBuilt(for target: String) -> Bool { builtTargets?[target] ?? ((self.target ?? "mac") == target && built) }
 
     enum CodingKeys: String, CodingKey {
         case ev, ok, error
@@ -62,6 +70,11 @@ struct Plan: Decodable {
         case workDir = "work_dir"
         case built, icon
         case fpsTarget = "fps_target"
-        case notes
+        case notes, target
+        case builtTargets = "built_targets"
+        case buildStatus = "build_status"
+        case profileID = "profile_id"
+        case graphicsAPI = "graphics_api"
+        case shaderWarnings = "shader_warnings"
     }
 }

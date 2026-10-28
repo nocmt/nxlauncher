@@ -15,6 +15,10 @@ enum PipelineEvent {
     case games([GamesEntry])
     case dependencies(DependencyReport)
     case error(String)
+    case diagnostic(id: String, message: String, hint: String, session: String)
+    case session(id: String, logPath: String)
+    case artifact(target: String, path: String, game: String, version: String, graphicsAPI: String)
+    case warning(String)
 }
 
 struct DependencyCheck: Decodable, Identifiable {
@@ -25,10 +29,38 @@ struct DependencyCheck: Decodable, Identifiable {
     let hint: String
 }
 
+struct DependencyRepair: Decodable, Identifiable {
+    let id: String
+    let argv: [String]
+    let command: String
+    var kind: String? = nil
+    let requiresAdmin: Bool
+    let automatic: Bool
+    enum CodingKeys: String, CodingKey {
+        case id, argv, command, automatic, kind
+        case requiresAdmin = "requires_admin"
+    }
+    // Never execute command text or accept a backend-provided executable path blindly.
+    var approvedArguments: [String]? {
+        let allowed: Set<String> = ["zstd", "spirv-cross", "dotnet@10", "glslang", "xcodegen"]
+        guard (kind == nil || kind == "brew"), !requiresAdmin, !automatic, argv.count == 3,
+              id == "brew-\(argv[2])",
+              ["brew", "/opt/homebrew/bin/brew", "/usr/local/bin/brew"].contains(argv[0]),
+              argv[1] == "install", argv.dropFirst(2).allSatisfy({ allowed.contains($0) }) else { return nil }
+        return Array(argv.dropFirst())
+    }
+}
+
 struct DependencyReport: Decodable {
     let ready: Bool
     let checks: [DependencyCheck]
     let commands: [String]
+    var target: String? = nil
+    var repairs: [DependencyRepair]? = nil
+}
+
+struct GamesEventEnvelope: Decodable {
+    let games: [GamesEntry]
 }
 
 struct GamesEntry: Decodable, Identifiable {
@@ -72,8 +104,8 @@ func decodeEvent(_ line: String) -> PipelineEvent? {
         return nil
     case "games":
         if let data = line.data(using: .utf8),
-           let arr = try? JSONDecoder().decode([GamesEntry].self, from: data) {
-            return .games(arr)
+           let envelope = try? JSONDecoder().decode(GamesEventEnvelope.self, from: data) {
+            return .games(envelope.games)
         }
         return nil
     case "dependencies":
@@ -81,7 +113,16 @@ func decodeEvent(_ line: String) -> PipelineEvent? {
             return .dependencies(report)
         }
         return nil
+    case "session":
+        return .session(id: str("session_id"), logPath: str("log_path"))
+    case "artifact":
+        return .artifact(target: str("target"), path: str("path"), game: str("game"), version: str("version"), graphicsAPI: str("graphics_api"))
+    case "warning":
+        return .warning([str("message"), str("hint")].filter { !$0.isEmpty }.joined(separator: " — "))
     case "error":
+        if !str("error_id").isEmpty || !str("hint").isEmpty {
+            return .diagnostic(id: str("error_id"), message: str("message"), hint: str("hint"), session: str("session_id"))
+        }
         return .error(str("message"))
     default:
         return nil
@@ -100,11 +141,29 @@ final class Pipeline: @unchecked Sendable {
             switch self {
             case .cannotRun(let message):
                 return "Cannot run pipeline: \(message)"
-            case .exited(let code, let diagnostic):
-                let message = "Pipeline exited with status \(code)"
-                return diagnostic.map { "\(message): \($0)" } ?? message
+            case .exited(let code, _):
+                return "Pipeline exited with status \(code)"
             }
         }
+
+        var diagnostic: String? {
+            switch self {
+            case .cannotRun(let message):
+                return "Cannot run pipeline: \(message)"
+            case .exited(_, let diagnostic):
+                return diagnostic
+            }
+        }
+
+        func notice(operation: String) -> String {
+            switch self {
+            case .cannotRun:
+                return "\(operation)失败，无法启动构建流程，详情见构建日志"
+            case .exited(let code, _):
+                return "\(operation)失败（退出码 \(code)），详情见构建日志"
+            }
+        }
+
     }
 
     private let toolsDir: URL
@@ -117,6 +176,34 @@ final class Pipeline: @unchecked Sendable {
         self.toolsDir = toolsDir
         self.python = python
         self.env = env
+    }
+
+    /// Stream an explicitly authorized executable without involving a shell.
+    static func runTool(_ tool: String, args: [String], onLine: @escaping (String) -> Void) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: tool)
+        process.arguments = args
+        var env = ProcessInfo.processInfo.environment
+        env["HOMEBREW_NO_AUTO_UPDATE"] = "1"
+        env["HOMEBREW_NO_ENV_HINTS"] = "1"
+        process.environment = env
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        var buffer = Data()
+        while true {
+            let chunk = pipe.fileHandleForReading.availableData
+            if chunk.isEmpty { break }
+            buffer.append(chunk)
+            while let end = buffer.firstIndex(of: 10) {
+                onLine(String(decoding: buffer[..<end], as: UTF8.self))
+                buffer.removeSubrange(...end)
+            }
+        }
+        if !buffer.isEmpty { onLine(String(decoding: buffer, as: UTF8.self)) }
+        process.waitUntilExit()
+        if process.terminationStatus != 0 { throw Failure.exited(Int(process.terminationStatus), nil) }
     }
 
     /// The script's path.
@@ -153,7 +240,7 @@ final class Pipeline: @unchecked Sendable {
             let event = decodeEvent(line) ?? .log(line)
             var diagnostic: String?
             switch event {
-            case .error(let message):
+            case .error(let message), .diagnostic(_, let message, _, _):
                 if !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     lastError = message
                 }

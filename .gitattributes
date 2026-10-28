@@ -1,0 +1,15 @@
+# Third-party license texts and brand binaries are verified by exact byte hash.
+# Never let line-ending conversion or text detection rewrite them.
+Scripts/licenses/** -text
+Scripts/fonts/*.gz -text
+Resources/*.png -text
+Resources/*.icns -text
+docs/brand/*.png -text
+
+# Source and documentation are text.
+*.swift text
+*.py text
+*.sh text
+*.md text
+*.svg text
+*.json text

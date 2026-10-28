@@ -1,9 +1,5 @@
-0002-Restore-Mac-mouse-look-window-options-and-frame-diag.patch
-0003-Share-legacy-controller-glyph-mapping-through-upstre.patch
-0004-Validate-explicit-guest-memory-overrides-and-restore.patch
-0005-Restore-touch-polling-and-operation-mode-diagnostics.patch
-0006-Restore-Mac-preferred-language-fallback-behind-expli.patch
-0007-Synchronize-touch-polling-diagnostics.patch
-0008-Pass-host-owned-shared-font-payloads-to-LoadFont.patch
-0009-Clip-Metal-texture-view-mip-ranges.patch
-0010-Compose-format-and-descriptor-texture-swizzles.patch
+0001-Mac-input-window-and-controller-options.patch
+0002-Checked-launcher-memory-overrides.patch
+0003-System-language-and-touch-diagnostics.patch
+0004-Explicit-font-source-and-iOS-policy.patch
+0005-Static-build-no-guest-execution.patch

@@ -30,3 +30,47 @@ nxnative/dm/tools/nx_extract/bin/
 .venv/
 __pycache__/
 *.pyc
+
+# repository-local release staging and audit outputs
+.release/
+release-staging/
+*.build-lock
+*.release-lock
+*.sha256
+release-audit.json
+manifest.json
+
+# credentials, game content, saves, and private signing material
+*.keys
+*.key
+*.pem
+*.p12
+*.mobileprovision
+*.nsp
+*.xci
+*.nsz
+*.nca
+*.sav
+saves/
+backups/
+*.p8
+*.pfx
+*.jks
+*.nso
+*.nro
+*.ipa
+*.bak
+*.dSYM/
+*.log
+romfs/
+exefs/
+
+# local survey/save exports and upgrade-review preservation archives
+*_survey/
+save/
+save-data/
+.env
+.env.*
+patches/.pre-upgrade*
+patches/.upgrade-review/
+patches/*.log

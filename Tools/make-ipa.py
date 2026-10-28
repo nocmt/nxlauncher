@@ -9,6 +9,8 @@ import re
 import subprocess
 import sys
 
+from shader_chain import chain_of, validate_library, ShaderChainError, resolve_graphics, shader_resources
+
 
 PAYLOAD = 'Payload/DmIOS.app'
 APP_REL = 'ipa/build/ios/pkg/dd/Build/Products/Release-iphoneos/DmIOS.app'
@@ -57,6 +59,13 @@ def resolve_profile(repo, work, selected):
     if local not in extra:
         extra.append(local)
     env['DM_GAMES_DIR'] = os.pathsep.join(extra)
+    # Explicit pipeline identity wins over current inherited process preferences.
+    manifest = work / '.nxlauncher/build-ios.json'
+    if manifest.is_file():
+        import json
+        identity = json.loads(manifest.read_text()).get('profile', {})
+        if identity.get('dir') == str(work / 'profile' / selected):
+            env['DM_GAMES_FIRST'] = '1'
     game_script = require_file(repo / 'dm/games/game.py', 'upstream profile resolver')
     result = subprocess.run([sys.executable, str(game_script), 'dir', selected],
                             env=env, text=True, capture_output=True)
@@ -67,40 +76,34 @@ def resolve_profile(repo, work, selected):
     return selected, profile, profile_values(profile), env
 
 
-def resource_sources(work, profile, values, version):
+def resource_sources(work, profile, values, version, repo):
     romfs = work / 'extract' / version / 'RomFS'
-    if not romfs.is_dir():
+    image = romfs.with_name('RomFS.img')
+    if not romfs.is_dir() and not image.is_file():
         raise ExportError(f'missing RomFS for {version}: {romfs}')
     marker = values.get('romfs_marker', '')
     if not marker or Path(marker).is_absolute() or '..' in Path(marker).parts:
         raise ExportError(f'missing or invalid romfs_marker in {profile / "game.tsv"}')
-    if not (romfs / marker).exists():
+    if image.is_file():
+        import importlib.util
+        tool = repo / 'dm/tools/romfs.py'
+        spec = importlib.util.spec_from_file_location('nxlauncher_romfs', tool)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.Image(image).find(marker)
+    elif not (romfs / marker).exists():
         raise ExportError(f'missing RomFS marker: {romfs / marker}')
-    ios = work / 'shader/ios'
-    header = profile / 'dmsh_chain.h'
-    match = re.search(r'^\s*#define\s+DMSH_CHAIN\s+"([^"/]+)"',
-                      header.read_text(encoding='utf-8') if header.is_file() else '', re.M)
-    chain = f'b-{match.group(1)}' if match else ''
-    nvn = ios / chain if chain else None
-    has_nvn = nvn and nvn.is_dir() and any(nvn.glob('*_b.metallib'))
-    gfx = os.environ.get('GFXAPI', '')
-    if gfx and gfx not in ('nvn', 'vulkan'):
-        raise ExportError(f'unknown GFXAPI: {gfx}')
-    if gfx == 'vulkan' or (not gfx and not has_nvn and (ios / 'vk/vk_shaders.metallib').is_file()):
-        require_file(ios / 'vk/vk_shaders.metallib', 'iOS Vulkan shader library')
-        msl_dir = 'vk'
-    else:
-        if not has_nvn:
-            raise ExportError(f'missing iOS shader libraries: {ios / (chain or "b-<DMSH_CHAIN>")} '
-                              '(expected *_b.metallib; shader/cache contains macOS libraries)')
-        msl_dir = chain
-    sources = [(f'msl/{msl_dir}', ios / msl_dir)]
+    try:
+        gfx = resolve_graphics(work, profile, 'ios', os.environ.get('GFXAPI') or 'auto')
+        sources = shader_resources(repo, work, profile, values.get('title_id', profile.name), 'ios', gfx)
+    except ShaderChainError as error:
+        raise ExportError(str(error)) from error
     aoc = work / 'aoc'
     if aoc.exists():
         if not aoc.is_dir():
             raise ExportError(f'add-on content is not a directory: {aoc}')
         sources.append(('aoc', aoc))
-    sources.append(('romfs', romfs))
+    sources.append(('romfs.img', image) if image.is_file() else ('romfs', romfs))
     return sources
 
 
@@ -115,6 +118,10 @@ def tree_entries(root):
 
 
 def compare_resource(source, bundled):
+    if source.is_file():
+        if not bundled.is_file() or bundled.is_symlink() or not filecmp.cmp(source, bundled, shallow=False):
+            raise ExportError(f'signed app resource differs from {source}: {bundled}; reassemble and re-sign')
+        return
     if not bundled.is_dir() or bundled.is_symlink():
         raise ExportError(f'signed app is missing complete resources: {bundled}; '
                           'assemble all resources and sign the complete bundle before export')
@@ -175,7 +182,7 @@ def main(argv=None):
     if not executable or Path(executable).name != executable:
         raise ExportError(f'invalid CFBundleExecutable in {app / "Info.plist"}')
     require_file(app / executable, 'built app executable')
-    sources = resource_sources(work, profile, values, version)
+    sources = resource_sources(work, profile, values, version, repo)
     packer = require_file(repo / 'dm/ios/tools/pack_ipa.py', 'upstream IPA packer')
     default_name = values.get('ipa', f'{game}.ipa')
     if Path(default_name).name != default_name:
@@ -193,7 +200,7 @@ def main(argv=None):
     command = [sys.executable, str(packer), str(out), '--store', values.get('zip_store', '')]
     maps = [(PAYLOAD, app)]
     if not args.signed:
-        for relative in ('_CodeSignature', 'embedded.mobileprovision', 'msl', 'aoc', 'romfs'):
+        for relative in ('_CodeSignature', 'embedded.mobileprovision', 'msl', 'aoc', 'romfs', 'romfs.img'):
             command.extend(['--skip', f'{PAYLOAD}/{relative}'])
         maps.extend((f'{PAYLOAD}/{relative}', source) for relative, source in sources)
     command.extend(f'{archive}={source}' for archive, source in maps)

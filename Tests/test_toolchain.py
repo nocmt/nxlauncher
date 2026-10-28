@@ -263,6 +263,51 @@ class DoctorTests(ToolchainFixture):
             for package in ('lz4', 'pillow', 'backports.zstd')
         ])
 
+    def test_mac_gl_skips_iphone_sdk_xcodegen_metal4_and_translator(self):
+        self.translator.unlink()
+        original = self.fake_probe
+        def probe(argv, env):
+            if argv == ['uname', '-m']:
+                return True, 'arm64', ''
+            return original(argv, env)
+        self._probe.side_effect = probe
+        with mock.patch.object(toolchain.shutil, 'which', side_effect=lambda name, path=None:
+                               None if name == 'xcodegen' else '/fixture/bin/' + name):
+            report = toolchain.doctor(self.repo, self.python, self.env, target='mac', graphics_api='gl')
+        ids = self.checks(report)
+        self.assertTrue(report['ready'])
+        self.assertIn('macosx', ids)
+        self.assertIn('glslangValidator', ids)
+        for name in ('iphoneos', 'xcodegen', 'translator', 'macos-version', 'xcode-version'):
+            self.assertNotIn(name, ids)
+        commands = [call.args[0] for call in self._probe.call_args_list]
+        self.assertFalse(any('iphoneos' in cmd for cmd in commands))
+
+    def test_pinned_metal_compiler_is_target_specific(self):
+        lock = self.repo / 'dm/gfx/tools/dmsh_chain.lock'
+        lock.write_text('metal_iphoneos\tApple metal version exact-fixture\n')
+        original = self.fake_probe
+        def probe(argv, env):
+            if argv == ['xcrun', '--sdk', 'iphoneos', 'metal', '--version']:
+                return True, 'Apple metal version wrong-fixture', ''
+            if argv == ['xcodebuild', '-version']:
+                return True, 'Xcode 27.1', ''
+            return original(argv, env)
+        self._probe.side_effect = probe
+        report = toolchain.doctor(self.repo, self.python, self.env, target='ios', graphics_api='nvn')
+        self.assertFalse(self.checks(report)['metal-version']['ok'])
+        self.assertIn('exact-fixture', self.checks(report)['metal-version']['hint'])
+
+    def test_brew_repairs_have_fixed_allowlisted_argv(self):
+        with mock.patch.object(toolchain.shutil, 'which', return_value=None):
+            report = toolchain.doctor(self.repo, self.python, self.env)
+        for repair in report['repairs']:
+            self.assertFalse(repair['automatic'])
+            if repair['kind'] == 'brew':
+                self.assertEqual(repair['argv'][:2], ['brew', 'install'])
+                self.assertIn(repair['argv'][2], {'zstd', 'spirv-cross', 'dotnet@10', 'glslang', 'xcodegen'})
+                self.assertEqual(repair['id'], 'brew-' + repair['argv'][2])
+
     def test_ready_with_nested_translator_executable_and_successful_probes(self):
         before = dict(self.env)
         report = self.run_doctor()
