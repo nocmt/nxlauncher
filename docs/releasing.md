@@ -1,6 +1,6 @@
 # NxLauncher 发布流程（0.1.2）
 
-发布有两条路径：本机用自己的 Developer ID 构建并手动上传；标签 CI 自动构建 **ad-hoc 签名、未公证、未 staple** 的 GitHub prerelease。两者不能混称。0.1.2 已在本地完成 Developer ID 签名、未公证的构建与验收；**公开与上传当前暂停**，原因见文末“公开暂停（2026-10-28）”。CI 面向后续标签自动发布；已经存在的同名 Release 不会被 CI 覆盖。
+发布有两条路径：本机用自己的 Developer ID 构建并手动上传；标签 CI 自动构建 **ad-hoc 签名、未公证、未 staple** 的 GitHub prerelease。两者不能混称。0.1.2 已用本机 Developer ID 签名、手动创建 prerelease 并上传三个资产；公开前的历史重写见文末“History rewrite (2026-10-28)”。CI 面向后续标签自动发布；已经存在的同名 Release 会被跳过，不会被覆盖。
 
 ## 输入与边界
 
@@ -112,9 +112,9 @@ gh release create "$tag" \
 
 `python3 Tools/release-audit.py --root . --kind history` 检查本地可达 Git refs 的对象：真实密钥、游戏/密钥/存档路径是阻断；无凭据的旧开发路径警告不能视为源码或资产泄密扫描通过。该命令不改写历史，也不覆盖远程不可达对象或图片 OCR。首次公开前应单独运行并审阅结果，不能用 CI 的产物审计代替。发现真实秘密时停止发布、撤销密钥并处理历史。
 
-## 公开暂停（2026-10-28）
+## History rewrite (2026-10-28)
 
-2026-10-28 的公开检查结果：源码审计、构建产物审计和可达历史扫描都没有发现密钥值、密码或游戏数据载荷；但把历史中每个 `docs/screenshot.png` 版本导出后逐张目视检查，发现 **四个旧版本含第三方游戏封面美术**（封面缩略图，不是游戏运行画面）。按“禁止游戏内容入库／公开”的边界，这些 blob 不能随仓库一起公开，因此本次停止公开、推送和发起 Release，仓库继续保持私有。当前工作树中该截图已删除，但删除不会移除历史对象。
+公开检查时把历史中每个 `docs/screenshot.png` 版本导出后逐张目视检查，发现 **四个旧版本含第三方游戏封面美术**（封面缩略图，不是游戏运行画面），另有开发机绝对路径。按“禁止游戏内容入库／公开”的边界，这些 blob 不能随仓库公开。因为删除当前文件不会移除历史对象，发布前对全部本地分支执行了 `git filter-branch --index-filter 'git rm -r --cached --ignore-unmatch docs/screenshot.png'`，随后删除 `refs/original`、过期 reflog 并 `git gc --prune=now`，再强制推送 `main` 和 `maintenance/nxnative-upstream-patches`。重写前的完整历史保存在仓库外的 Git bundle 中，仅供本地恢复，不可作为公开素材；工作树内容未改变（仅该文件不再存在于任何提交）。
 
 | 历史 blob | 目视结论 |
 |---|---|
@@ -123,11 +123,11 @@ gh release create "$tag" \
 | `c77ce93cae5f21781062427047f785480c07958d` | 较早界面；含封面缩略图、开发机路径、游戏文件绝对路径；无密钥值 |
 | `99c76ac061a2fb71a25169a420d77c189ad28db3` | 同上 |
 
-可选处理（都需要仓库所有者决定，发布脚本不会自动执行）：
+重写后复核：`Tools/release-audit.py --kind history` 对 233 个可达 blob 报告 0 阻断，仅保留 10 条无凭据的旧开发路径 warning；`prepare-nxnative.py --check` 仍验证 5 个补丁与 tree `a3814a41de5781b208525f25b6facabcf8cd423f`；发布 ZIP 与重写前的构建产物逐字节相同（工作树未变）。
 
-1. **保持私有**，只分发本地签名 ZIP（当前状态）。
-2. **用全新历史的单次提交公开**：新建孤立分支或新仓库，只推入当前已审阅的源码快照，使上述 blob 不在可达历史中；本仓库原历史保留在本地。这不是在不改历史的前提下公开。
-3. **重写历史移除该文件**（`git filter-repo --path docs/screenshot.png --invert-paths`），随后强制推送并通知协作者重新克隆。只有在明确接受改写历史时才采用。
+注意：`--kind history` 的正则扫描不覆盖图片内容。封面美术问题是人工目视检查发现的，任何未来的截图或品牌图都需要同样的人工检查。
 
-任何选项完成后，都需要重新运行 `Tools/release-audit.py --kind history`，并对导出的历史截图再次目视检查，才能继续下面的手动上传流程。旧截图目视检查属于人工步骤，自动审计的正则扫描不能替代。
+## Published state (2026-10-28)
+
+`main` 与 `maintenance/nxnative-upstream-patches` 指向发布提交；标签 `v0.1.2` 指向同一提交；Release 是 prerelease，包含 ZIP、`.sha256`、`.manifest.json` 三个资产。推送标签触发的工作流先运行 `precheck`，检测到同名 Release 已存在后跳过自动 ad-hoc 构建，因此手动签名的 Developer ID 资产没有被替换或重复上传。
 

@@ -20,7 +20,7 @@ Organize your own game dumps, inspect the toolchain, build, and export a Mac app
 
 </div>
 
-> **0.1.2 preview status:** the repository is still private and there is no public download yet. A **Developer ID–signed, unnotarized** build exists locally and passed its content audit, but publication is on hold: older revisions of `docs/screenshot.png` in this repository's history contain third-party game cover artwork, which must not be published. See [release procedure](docs/releasing.md) for the exact blobs and the available paths forward. The local manifest records the delivered asset's signature verification; the binary is not notarized.
+> **0.1.2 is published** as a [GitHub prerelease](https://github.com/nocmt/nxlauncher/releases/tag/v0.1.2): **Developer ID signed, hardened runtime, not notarized and not stapled**, so Gatekeeper may still block it on another Mac. The release contains only the launcher ZIP, its checksum and its manifest: no games, keys or saves. See [release notes](docs/releasing.md) for what was verified and what was not.
 
 ## A library that builds
 
@@ -152,7 +152,7 @@ The coordinator confirmed upstream HEAD/base **`201dfd1280684e9d3ceac8b644236fda
 
 [Troubleshooting](docs/troubleshooting.md) provides concrete checks for dependencies, Finder/Terminal differences, inputs/keys, shaders, export failures, Gatekeeper, missing saves, graphics, iOS signing and diagnostic review. No AI assistant is required.
 
-For a report include launcher version, target, OS/chip, title ID/update, graphics API, failing stage and a reviewed diagnostic ZIP. Do not attach keys, dumps, extracted game resources, saves or signing credentials. Public issue access follows repository publication: [Issues](https://github.com/nocmt/nxlauncher/issues).
+For a report include launcher version, target, OS/chip, title ID/update, graphics API, failing stage and a reviewed diagnostic ZIP. Do not attach keys, dumps, extracted game resources, saves or signing credentials. For issues: [Issues](https://github.com/nocmt/nxlauncher/issues).
 
 ## Project boundaries
 

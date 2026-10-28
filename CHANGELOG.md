@@ -6,13 +6,13 @@ Only recorded changes and their validation boundaries are described here. A rele
 
 这里只记录改动与验证边界；出现版本标题不表示资产已经发布。
 
-## 0.1.2 — built locally, publication on hold / 本地构建完成，公开暂停
+## 0.1.2 — 2026-10-28
 
-**Local Developer ID–signed build verified; GitHub publication withheld. / 本地 Developer ID 签名包已通过验证；GitHub 公开暂缓。**
+**Published as a GitHub prerelease: Developer ID signed, not notarized, not stapled. / 已作为 GitHub 预发布版发布：Developer ID 签名，未公证、未 staple。**
 
-Repository: [nocmt/nxlauncher](https://github.com/nocmt/nxlauncher) is still private and no release asset has been published. The 0.1.2 app was built, audited and validated locally. Publication is on hold because historical revisions of `docs/screenshot.png` contain third-party game cover artwork; see [release procedure](docs/releasing.md#公开暂停2026-10-28) for the exact blobs and the available options.
+Release: [v0.1.2](https://github.com/nocmt/nxlauncher/releases/tag/v0.1.2). Assets are the launcher ZIP, its `.sha256` and its manifest; no games, keys or saves are attached. Before publication the repository history was rewritten to drop an old screenshot file whose revisions contained third-party game cover artwork (see [release procedure](docs/releasing.md#history-rewrite-2026-10-28)); a local Git bundle keeps the pre-rewrite history.
 
-仓库 [nocmt/nxlauncher](https://github.com/nocmt/nxlauncher) 仍为私有，尚未发布任何 Release 资产。0.1.2 App 已在本地构建、审计并验收；公开暂缓的原因是历史中 `docs/screenshot.png` 的若干旧版本含第三方游戏封面美术。具体 blob 和可选处理见[发布流程](docs/releasing.md#公开暂停2026-10-28)。
+Release：[v0.1.2](https://github.com/nocmt/nxlauncher/releases/tag/v0.1.2)。资产只有启动器 ZIP、`.sha256` 和清单，不含游戏、密钥或存档。发布前已重写历史，移除一份旧截图文件（其若干版本含第三方游戏封面美术，见[发布流程](docs/releasing.md#history-rewrite-2026-10-28)）；重写前的历史保留在本地 Git bundle 中。
 
 ### Workflow / 构建流程
 

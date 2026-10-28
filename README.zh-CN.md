@@ -20,7 +20,7 @@
 
 </div>
 
-> **0.1.2 预览版状态：**仓库仍为私有，目前没有公开下载入口。本地已有 **Developer ID 签名、未公证**的构建，并通过内容审计，但公开暂时搁置：本仓库历史中 `docs/screenshot.png` 的若干旧版本含第三方游戏封面美术，不能随历史公开。具体 blob 与可选处理方式见[发布流程](docs/releasing.md)。本地清单记录了实际资产的签名校验；该二进制未公证。
+> **0.1.2 已发布**为 [GitHub 预发布版](https://github.com/nocmt/nxlauncher/releases/tag/v0.1.2)：**Developer ID 签名、启用 hardened runtime、未公证、未 staple**，在其他 Mac 上仍可能被 Gatekeeper 拦截。Release 只含启动器 ZIP、校验和与清单，不含游戏、密钥或存档。验证范围与未验证项见[发布流程](docs/releasing.md)。
 
 ## 从游戏库到构建产物
 
@@ -152,7 +152,7 @@ python3 -m unittest discover -s Tests -v
 
 [排障指南](docs/troubleshooting.md)提供依赖、Finder／终端差异、文件／密钥识别、着色器、导出、Gatekeeper、存档位置、画面、iOS 签名和诊断检查的具体路径，无需依赖 AI 才能处理。
 
-反馈请附版本、目标、系统／芯片、title ID／更新版本、图形 API、失败阶段和检查后的诊断 ZIP。不要上传密钥、游戏包、解包资源、存档或签名凭据。仓库公开后可通过 [Issues](https://github.com/nocmt/nxlauncher/issues)反馈。
+反馈请附版本、目标、系统／芯片、title ID／更新版本、图形 API、失败阶段和检查后的诊断 ZIP。不要上传密钥、游戏包、解包资源、存档或签名凭据。可通过 [Issues](https://github.com/nocmt/nxlauncher/issues)反馈。
 
 ## 支持边界
 
